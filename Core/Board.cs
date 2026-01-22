@@ -242,6 +242,151 @@ namespace ChessEngine.Core
         {
             return (Castling & right) != 0;
         }
+
+
+        public bool IsSquareAttacked(int square, bool byWhite)
+        {
+            int[] pawnOffsets = byWhite ? new[] { -7, -9 } : new[] { 7, 9 };
+            
+            int file = square % 8;
+            int rank = square / 8;
+
+            // ==========================
+            // Pawn attacks
+            // ==========================
+            if (byWhite)
+            {
+                if (file > 0 && square >= 9 && Squares[square - 9] == Piece.WP)
+                    return true;
+                if (file < 7 && square >= 7 && Squares[square - 7] == Piece.WP)
+                    return true;
+            }
+            else
+            {
+                if (file > 0 && square <= 55 && Squares[square + 7] == Piece.BP)
+                    return true;
+                if (file < 7 && square <= 54 && Squares[square + 9] == Piece.BP)
+                    return true;
+            }
+
+            // ==========================
+            // Knight attacks
+            // ==========================
+            int[] knightOffsets = { 15, 17, 10, 6, -15, -17, -10, -6 };
+
+            foreach (int offset in knightOffsets)
+            {
+                int to = square + offset;
+                if (to < 0 || to >= 64)
+                    continue;
+
+                int toFile = to % 8;
+                int toRank = to / 8;
+
+                if (Math.Abs(toFile - file) + Math.Abs(toRank - rank) != 3)
+                    continue;
+
+                Piece p = Squares[to];
+                if (byWhite && p == Piece.WN) return true;
+                if (!byWhite && p == Piece.BN) return true;
+            }
+
+            // ==========================
+            // Diagonals
+            // ==========================
+            int[] bishopDirs = { 7, 9, -7, -9 };
+
+            foreach (int dir in bishopDirs)
+            {
+                int to = square;
+
+                while (true)
+                {
+                    int prev = to;
+                    to += dir;
+
+                    if (to < 0 || to >= 64)
+                        break;
+
+                    if (Math.Abs((to % 8) - (prev % 8)) != 1)
+                        break;
+
+                    Piece p = Squares[to];
+                    if (p == Piece.Empty)
+                        continue;
+
+                    if (byWhite && (p == Piece.WB || p == Piece.WQ))
+                        return true;
+
+                    if (!byWhite && (p == Piece.BB || p == Piece.BQ))
+                        return true;
+
+                    break;
+                }
+            }
+
+            // ==========================
+            // Sliding Horizontally and Vertically
+            // ==========================
+            int[] rookDirs = { 8, -8, 1, -1 };
+
+            foreach (int dir in rookDirs)
+            {
+                int to = square;
+
+                while (true)
+                {
+                    int prev = to;
+                    to += dir;
+
+                    if (to < 0 || to >= 64)
+                        break;
+
+                    if ((dir == 1 || dir == -1) &&
+                        Math.Abs((to % 8) - (prev % 8)) != 1)
+                        break;
+
+                    Piece p = Squares[to];
+                    if (p == Piece.Empty)
+                        continue;
+
+                    if (byWhite && (p == Piece.WR || p == Piece.WQ))
+                        return true;
+
+                    if (!byWhite && (p == Piece.BR || p == Piece.BQ))
+                        return true;
+
+                    break;
+                }
+            }
+
+            // ==========================
+            // King attacks
+            // ==========================
+            int[] kingOffsets = { 8, -8, 1, -1, 9, 7, -9, -7 };
+
+            foreach (int offset in kingOffsets)
+            {
+                int to = square + offset;
+                if (to < 0 || to >= 64)
+                    continue;
+
+                int toFile = to % 8;
+                int toRank = to / 8;
+
+                if (Math.Abs(toFile - file) > 1 ||
+                    Math.Abs(toRank - rank) > 1)
+                    continue;
+
+                Piece p = Squares[to];
+                if (byWhite && p == Piece.WK) return true;
+                if (!byWhite && p == Piece.BK) return true;
+            }
+
+            return false;
+        }
+
+
     }
 
 }
