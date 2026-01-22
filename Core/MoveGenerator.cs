@@ -247,7 +247,8 @@ namespace ChessEngine.Core
             bool white = board.WhiteToMove;
             int fromFile = from % 8;
             int fromRank = from / 8;
-            foreach(int offset in KingOffsets)
+
+            foreach (int offset in KingOffsets)
             {
                 int to = from + offset;
                 if (!IsOnBoard(to))
@@ -255,53 +256,73 @@ namespace ChessEngine.Core
 
                 int toFile = to % 8;
                 int toRank = to / 8;
-                if (Math.Abs(fromFile - toFile) > 1 || Math.Abs(fromRank - toRank) > 1)
+
+                if (Math.Abs(fromFile - toFile) > 1 ||
+                    Math.Abs(fromRank - toRank) > 1)
                     continue;
-                
+
                 Piece target = board.Squares[to];
-                if(target == Piece.Empty)
+                if (target == Piece.Empty)
                 {
-                    moves.Add(new Move(from,to));
+                    moves.Add(new Move(from, to));
                 }
-                else if(target.isWhite() != white){
+                else if (target.IsWhite() != white)
+                {
                     moves.Add(new Move(from, to, Piece.Empty, MoveFlags.Capture));
                 }
             }
+
+            // ==========================
+            // Castling (LEGAL)
+            // ==========================
             if (white)
             {
-                //White Castling
-                if((board.Castling & CastlingRights.WhiteKingSide) != 0 && 
-                board.Squares[5]==Piece.Empty && 
-                board.Squares[6] == Piece.Empty)
+                // White king side
+                if ((board.Castling & CastlingRights.WhiteKingSide) != 0 &&
+                    board.Squares[5] == Piece.Empty &&
+                    board.Squares[6] == Piece.Empty &&
+                    !board.IsSquareAttacked(4, false) &&
+                    !board.IsSquareAttacked(5, false) &&
+                    !board.IsSquareAttacked(6, false))
                 {
-                    moves.Add(new Move(4,6,Piece.Empty, MoveFlags.Castling));
+                    moves.Add(new Move(4, 6, Piece.Empty, MoveFlags.Castling));
                 }
 
-                if ((board.Castling & CastlingRights.WhiteQueenSide) != 0 && 
-                board.Squares[3] == Piece.Empty && 
-                board.Squares[2] == Piece.Empty && 
-                board.Squares[1] == Piece.Empty)
+                // White queen side
+                if ((board.Castling & CastlingRights.WhiteQueenSide) != 0 &&
+                    board.Squares[3] == Piece.Empty &&
+                    board.Squares[2] == Piece.Empty &&
+                    board.Squares[1] == Piece.Empty &&
+                    !board.IsSquareAttacked(4, false) &&
+                    !board.IsSquareAttacked(3, false) &&
+                    !board.IsSquareAttacked(2, false))
                 {
                     moves.Add(new Move(4, 2, Piece.Empty, MoveFlags.Castling));
                 }
-                //Black Castling
-                else
+            }
+            else
+            {
+                // Black king side
+                if ((board.Castling & CastlingRights.BlackKingSide) != 0 &&
+                    board.Squares[61] == Piece.Empty &&
+                    board.Squares[62] == Piece.Empty &&
+                    !board.IsSquareAttacked(60, true) &&
+                    !board.IsSquareAttacked(61, true) &&
+                    !board.IsSquareAttacked(62, true))
                 {
-                    if ((board.Castling & CastlingRights.BlackKingSide) != 0 &&
-                        board.Squares[61] == Piece.Empty &&
-                        board.Squares[62] == Piece.Empty)
-                    {
-                        moves.Add(new Move(60, 62, Piece.Empty, MoveFlags.Castling));
-                    }
+                    moves.Add(new Move(60, 62, Piece.Empty, MoveFlags.Castling));
+                }
 
-
-                    if ((board.Castling & CastlingRights.BlackQueenSide) != 0 &&
-                        board.Squares[59] == Piece.Empty &&
-                        board.Squares[58] == Piece.Empty &&
-                        board.Squares[57] == Piece.Empty)
-                    {
-                        moves.Add(new Move(60, 58, Piece.Empty, MoveFlags.Castling));
-                    }
+                // Black queen side
+                if ((board.Castling & CastlingRights.BlackQueenSide) != 0 &&
+                    board.Squares[59] == Piece.Empty &&
+                    board.Squares[58] == Piece.Empty &&
+                    board.Squares[57] == Piece.Empty &&
+                    !board.IsSquareAttacked(60, true) &&
+                    !board.IsSquareAttacked(59, true) &&
+                    !board.IsSquareAttacked(58, true))
+                {
+                    moves.Add(new Move(60, 58, Piece.Empty, MoveFlags.Castling));
                 }
             }
         }
