@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
-namespace ChessEngine.Core
+namespace ChessEngine
 {
     public static class MoveGenerator
     {
@@ -203,7 +203,7 @@ namespace ChessEngine.Core
                 {
                     int previous = to;
                     to += direction;
-                    if(!IsOnBoard[to])
+                    if(!IsOnBoard(to))
                         break;
                     
                     //prevents rooks and queens from going around the board
@@ -213,7 +213,7 @@ namespace ChessEngine.Core
                     Piece target = board.Squares[to];
                     if (target == Piece.Empty)
                     {
-                        moves.add(new Move(from,to));
+                        moves.Add(new Move(from,to));
                     }
                     else
                     {

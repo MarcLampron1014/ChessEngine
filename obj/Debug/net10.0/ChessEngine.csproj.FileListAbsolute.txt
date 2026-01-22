@@ -1,0 +1,15 @@
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.AssemblyInfoInputs.cache
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.AssemblyInfo.cs
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.csproj.CoreCompileInputs.cache
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.sourcelink.json
+C:\Users\marcl\ChessEngine\bin\Debug\net10.0\ChessEngine.exe
+C:\Users\marcl\ChessEngine\bin\Debug\net10.0\ChessEngine.deps.json
+C:\Users\marcl\ChessEngine\bin\Debug\net10.0\ChessEngine.runtimeconfig.json
+C:\Users\marcl\ChessEngine\bin\Debug\net10.0\ChessEngine.dll
+C:\Users\marcl\ChessEngine\bin\Debug\net10.0\ChessEngine.pdb
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.dll
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\refint\ChessEngine.dll
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.pdb
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ChessEngine.genruntimeconfig.cache
+C:\Users\marcl\ChessEngine\obj\Debug\net10.0\ref\ChessEngine.dll

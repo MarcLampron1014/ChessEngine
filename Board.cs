@@ -5,13 +5,30 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
-namespace ChessEngine.Core
+namespace ChessEngine
 {
     public enum Piece
     {
         Empty = 0,
         WP, WN, WB, WR, WQ, WK,
         BP, BN, BB, BR, BQ, BK
+    }
+    public static class PieceExtensions
+    {
+        public static bool IsWhite(this Piece p)
+        {
+            return p >= Piece.WP && p <= Piece.WK;
+        }
+
+        public static bool IsBlack(this Piece p)
+        {
+            return p >= Piece.BP && p <= Piece.BK;
+        }
+
+        public static bool IsEmpty(this Piece p)
+        {
+            return p == Piece.Empty;
+        }
     }
     
     [Flags]
@@ -89,111 +106,100 @@ namespace ChessEngine.Core
 
             history.Clear();
         }
-
-        public void MakeMove()
+        
+        public void MakeMove(Move move)
         {
+            int from = move.From;
+            int to = move.To;
+            Piece piece = Squares[from];
+
+            // Determine captured piece
+            Piece capturedPiece = Squares[to];
+            if ((move.Flags & MoveFlags.EnPassant) != 0)
+            {
+                int capSq = WhiteToMove ? to - 8 : to + 8;
+                capturedPiece = Squares[capSq];
+            }
+
             UndoInfo undo = new UndoInfo
             {
-                CapturedPiece = Squares[move.To],
+                CapturedPiece = capturedPiece,
                 EnPassantSquare = EnPassantSquare,
                 CastlingRights = Castling,
                 HalfMoveClock = HalfMoveClock
             };
 
             history.Push(undo);
-            Piece movingPiece = Squares[move.From];
+
+            // Reset EP
             EnPassantSquare = -1;
 
             // Halfmove clock
-            if (movingPiece == Piece.WP || movingPiece == Piece.BP || undo.CapturedPiece != Piece.Empty)
+            if (piece == Piece.WP || piece == Piece.BP || capturedPiece != Piece.Empty)
                 HalfMoveClock = 0;
             else
                 HalfMoveClock++;
 
-            //Move Piece
-            Squares[move.To] = movingPiece;
-            Squares[move.From] = Piece.Empty;
+            // Move piece
+            Squares[to] = piece;
+            Squares[from] = Piece.Empty;
 
             // Promotion
             if (move.Promotion != Piece.Empty)
+                Squares[to] = move.Promotion;
+
+            // En passant capture
+            if ((move.Flags & MoveFlags.EnPassant) != 0)
             {
-                Squares[move.To] = move.Promotion;
+                int capSq = WhiteToMove ? to - 8 : to + 8;
+                Squares[capSq] = Piece.Empty;
             }
 
-            // TODO: En passant capture
-            
-            
+            // Set en passant square
+            if (piece == Piece.WP && to - from == 16)
+                EnPassantSquare = from + 8;
+            else if (piece == Piece.BP && from - to == 16)
+                EnPassantSquare = from - 8;
 
-            //Castling rights
+            // Remove castling rights: king move
             if (piece == Piece.WK)
                 Castling &= ~(CastlingRights.WhiteKingSide | CastlingRights.WhiteQueenSide);
-
-            if (piece == Piece.BK)
+            else if (piece == Piece.BK)
                 Castling &= ~(CastlingRights.BlackKingSide | CastlingRights.BlackQueenSide);
-            
-            // White rooks
-            if (from == 0)
-                Castling &= ~CastlingRights.WhiteQueenSide;
-            else if (from == 7)
-                Castling &= ~CastlingRights.WhiteKingSide;
 
-            // Black rooks
-            else if (from == 56)
-                Castling &= ~CastlingRights.BlackQueenSide;
-            else if (from == 63)
-                Castling &= ~CastlingRights.BlackKingSide;
+            // Remove castling rights: rook move
+            if (from == 0) Castling &= ~CastlingRights.WhiteQueenSide;
+            else if (from == 7) Castling &= ~CastlingRights.WhiteKingSide;
+            else if (from == 56) Castling &= ~CastlingRights.BlackQueenSide;
+            else if (from == 63) Castling &= ~CastlingRights.BlackKingSide;
 
-            //Removed rights when rook is captured
+            // Remove castling rights: rook captured
             if (capturedPiece == Piece.WR)
             {
-                if (to == 0)
-                    Castling &= ~CastlingRights.WhiteQueenSide;
-                else if (to == 7)
-                    Castling &= ~CastlingRights.WhiteKingSide;
+                if (to == 0) Castling &= ~CastlingRights.WhiteQueenSide;
+                else if (to == 7) Castling &= ~CastlingRights.WhiteKingSide;
             }
             else if (capturedPiece == Piece.BR)
             {
-                if (to == 56)
-                    Castling &= ~CastlingRights.BlackQueenSide;
-                else if (to == 63)
-                    Castling &= ~CastlingRights.BlackKingSide;
+                if (to == 56) Castling &= ~CastlingRights.BlackQueenSide;
+                else if (to == 63) Castling &= ~CastlingRights.BlackKingSide;
             }
-            
 
-            //Castling rook move
+            // Castling rook move
             if ((move.Flags & MoveFlags.Castling) != 0)
             {
                 if (piece == Piece.WK)
                 {
-                    // White king side
-                    if (move.To == 6)
-                    {
-                        Squares[5] = Piece.WR; // rook f1
-                        Squares[7] = Piece.Empty;
-                    }
-                    // White queen side
-                    else if (move.To == 2)
-                    {
-                        Squares[3] = Piece.WR; // rook d1
-                        Squares[0] = Piece.Empty;
-                    }
+                    if (to == 6)      { Squares[5] = Piece.WR; Squares[7] = Piece.Empty; }
+                    else if (to == 2) { Squares[3] = Piece.WR; Squares[0] = Piece.Empty; }
                 }
                 else if (piece == Piece.BK)
                 {
-                    // Black king side
-                    if (move.To == 62)
-                    {
-                        Squares[61] = Piece.BR; // rook f8
-                        Squares[63] = Piece.Empty;
-                    }
-                    // Black queen side
-                    else if (move.To == 58)
-                    {
-                        Squares[59] = Piece.BR; // rook d8
-                        Squares[56] = Piece.Empty;
-                    }
+                    if (to == 62)     { Squares[61] = Piece.BR; Squares[63] = Piece.Empty; }
+                    else if (to == 58){ Squares[59] = Piece.BR; Squares[56] = Piece.Empty; }
                 }
             }
+
             WhiteToMove = !WhiteToMove;
             if (WhiteToMove)
                 FullMoveNumber++;
@@ -207,16 +213,40 @@ namespace ChessEngine.Core
             if (!WhiteToMove)
                 FullMoveNumber--;
 
-            Piece movedPiece = Squares[move.To];
+            int from = move.From;
+            int to = move.To;
+
+            Piece movedPiece = Squares[to];
+
+            // Undo castling rook move
+            if ((move.Flags & MoveFlags.Castling) != 0)
+            {
+                if (movedPiece == Piece.WK)
+                {
+                    if (to == 6)      { Squares[7] = Piece.WR; Squares[5] = Piece.Empty; }
+                    else if (to == 2) { Squares[0] = Piece.WR; Squares[3] = Piece.Empty; }
+                }
+                else if (movedPiece == Piece.BK)
+                {
+                    if (to == 62)     { Squares[63] = Piece.BR; Squares[61] = Piece.Empty; }
+                    else if (to == 58){ Squares[56] = Piece.BR; Squares[59] = Piece.Empty; }
+                }
+            }
 
             // Undo promotion
             if (move.Promotion != Piece.Empty)
-            {
                 movedPiece = WhiteToMove ? Piece.WP : Piece.BP;
-            }
 
-            Squares[move.From] = movedPiece;
-            Squares[move.To] = undo.CapturedPiece;
+            Squares[from] = movedPiece;
+            Squares[to] = undo.CapturedPiece;
+
+            // Restore en passant capture
+            if ((move.Flags & MoveFlags.EnPassant) != 0)
+            {
+                int capSq = WhiteToMove ? to - 8 : to + 8;
+                Squares[to] = Piece.Empty;
+                Squares[capSq] = undo.CapturedPiece;
+            }
 
             EnPassantSquare = undo.EnPassantSquare;
             Castling = undo.CastlingRights;
@@ -384,6 +414,21 @@ namespace ChessEngine.Core
             }
 
             return false;
+        }
+        public bool IsKingInCheck(bool white)
+        {
+            int kingSquare = -1;
+
+            for (int i = 0; i < 64; i++)
+            {
+                if (Squares[i] == (white ? Piece.WK : Piece.BK))
+                {
+                    kingSquare = i;
+                    break;
+                }
+            }
+
+            return IsSquareAttacked(kingSquare, !white);
         }
 
 
