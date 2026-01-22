@@ -8,7 +8,8 @@ namespace ChessEngine{
                 return 1;
 
             long nodes = 0;
-            List<Move> moves = MoveGenerator.GenerateMoves(board);
+            List<Move> moves = MoveGenerator.GenerateLegalMoves(board);
+            
 
             foreach (var move in moves)
             {
@@ -19,5 +20,6 @@ namespace ChessEngine{
 
             return nodes;
         }
+        
     }
 }

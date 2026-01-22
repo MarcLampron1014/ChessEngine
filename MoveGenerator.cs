@@ -22,6 +22,30 @@ namespace ChessEngine
             8, -8, 1, -1, 9, 7, -9, -7
         };
 
+        public static List<Move> GenerateLegalMoves(Board board)
+        {
+            var moves = GenerateMoves(board);
+            var legalMoves = new List<Move>();
+
+            foreach (var move in moves)
+            {
+                // Store which side is moving before the move
+                bool sideThatMoved = board.WhiteToMove;
+                
+                board.MakeMove(move);
+
+                // Check if the side that just moved is in check
+                bool inCheck = board.IsKingInCheck(sideThatMoved);
+
+                board.UndoMove(move);
+
+                if (!inCheck)
+                    legalMoves.Add(move);
+            }
+
+            return legalMoves;
+        }
+
         public static List<Move> GenerateMoves(Board board)
         {
             var moves = new List<Move>(64);
@@ -69,6 +93,7 @@ namespace ChessEngine
             }
             return moves;
         }
+
         private static void GeneratePawnMoves(Board board, int from, List<Move> moves)
         {
             bool white = board.WhiteToMove;
@@ -207,7 +232,7 @@ namespace ChessEngine
                         break;
                     
                     //prevents rooks and queens from going around the board
-                    if(Math.Abs((to % 8)-(previous % 8))>1 && direction == 1 || direction == -1)
+                    if((direction == 1 || direction == -1) && Math.Abs((to % 8) - (previous % 8)) > 1)
                         break;
                     
                     Piece target = board.Squares[to];
@@ -235,13 +260,6 @@ namespace ChessEngine
         }
 
 
-
-
-        public static bool IsSquareAttacked(int square, Board board)
-        {
-            bool white = board.WhiteToMove;
-            return white;
-        }
         public static void GenerateKingMoves(Board board, int from, List<Move> moves)
         {
             bool white = board.WhiteToMove;
@@ -262,6 +280,11 @@ namespace ChessEngine
                     continue;
 
                 Piece target = board.Squares[to];
+                bool enemyIsWhite = !white;
+
+                if (board.IsSquareAttacked(to, enemyIsWhite))
+                    continue;
+
                 if (target == Piece.Empty)
                 {
                     moves.Add(new Move(from, to));

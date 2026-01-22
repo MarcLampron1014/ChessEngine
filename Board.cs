@@ -276,7 +276,6 @@ namespace ChessEngine
 
         public bool IsSquareAttacked(int square, bool byWhite)
         {
-            int[] pawnOffsets = byWhite ? new[] { -7, -9 } : new[] { 7, 9 };
             
             int file = square % 8;
             int rank = square / 8;
@@ -415,6 +414,8 @@ namespace ChessEngine
 
             return false;
         }
+
+
         public bool IsKingInCheck(bool white)
         {
             int kingSquare = -1;
@@ -427,6 +428,9 @@ namespace ChessEngine
                     break;
                 }
             }
+
+            if (kingSquare == -1)
+                return false; // King not found - shouldn't happen in legal positions
 
             return IsSquareAttacked(kingSquare, !white);
         }
