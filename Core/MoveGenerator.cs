@@ -9,6 +9,18 @@ namespace ChessEngine.Core
         {
             15, 17, 10, 6, -15, -17, -10, -6
         };
+        private static readonly int[] BishopDirections = 
+        { 
+            7, 9, -7, -9 
+        };
+        private static readonly int[] RookDirections   = 
+        { 
+            8, -8, 1, -1 
+        };
+        private static readonly int[] KingOffsets =
+        {
+            8, -8, 1, -1, 9, 7, -9, -7
+        };
 
         public static List<Move> GenerateMoves(Board board)
         {
@@ -33,6 +45,25 @@ namespace ChessEngine.Core
                     case Piece.WN:
                     case Piece.BN:
                         GenerateKnightMoves(board, square, moves);
+                        break;
+                    case Piece.WB:
+                    case Piece.BB:
+                        GenerateSlidingMoves(board, square, moves, BishopDirections);
+                        break;
+
+                    case Piece.WR:
+                    case Piece.BR:
+                        GenerateSlidingMoves(board, square, moves, RookDirections);
+                        break;
+
+                    case Piece.WQ:
+                    case Piece.BQ:
+                        GenerateSlidingMoves(board, square, moves, BishopDirections);
+                        GenerateSlidingMoves(board, square, moves, RookDirections);
+                        break;
+                    case Piece.WK:
+                    case Piece.BK:
+                        GenerateKingMoves(board, square, moves);
                         break;
                 }
             }
@@ -158,6 +189,43 @@ namespace ChessEngine.Core
             }
         }
 
+        //This functions despite the complexity is fast because for example: max amount of bishop square= 13 for the queen it's 27 which is far too small to worry about
+        private static void GenerateSlidingMoves(Board board, int from, List<Move> moves, int[] directions)
+        {
+            bool white = board.WhiteToMove;
+            int fromFile = from % 8;
+            int fromRank = from / 8;
+
+            foreach (int direction in directions)
+            {
+                int to = from;
+                while (true)
+                {
+                    int previous = to;
+                    to += direction;
+                    if(!IsOnBoard[to])
+                        break;
+                    
+                    //prevents rooks and queens from going around the board
+                    if(Math.Abs((to % 8)-(previous % 8))>1 && direction == 1 || direction == -1)
+                        break;
+                    
+                    Piece target = board.Squares[to];
+                    if (target == Piece.Empty)
+                    {
+                        moves.add(new Move(from,to));
+                    }
+                    else
+                    {
+                        if(target.IsWhite() != white){
+                            moves.Add(new Move(from, to,Piece.Empty,MoveFlags.Capture));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        
         // ==========================
         // Helpers
         // ==========================
@@ -165,12 +233,85 @@ namespace ChessEngine.Core
         {
             return square >= 0 && square < 64;
         }
+
+
+
+
+        public static bool IsSquareAttacked(int square, Board board)
+        {
+            bool white = board.WhiteToMove;
+            return white;
+        }
+        public static void GenerateKingMoves(Board board, int from, List<Move> moves)
+        {
+            bool white = board.WhiteToMove;
+            int fromFile = from % 8;
+            int fromRank = from / 8;
+            foreach(int offset in KingOffsets)
+            {
+                int to = from + offset;
+                if (!IsOnBoard(to))
+                    continue;
+
+                int toFile = to % 8;
+                int toRank = to / 8;
+                if (Math.Abs(fromFile - toFile) > 1 || Math.Abs(fromRank - toRank) > 1)
+                    continue;
+                
+                Piece target = board.Squares[to];
+                if(target == Piece.Empty)
+                {
+                    moves.Add(new Move(from,to));
+                }
+                else if(target.isWhite() != white){
+                    moves.Add(new Move(from, to, Piece.Empty, MoveFlags.Capture));
+                }
+            }
+            if (white)
+            {
+                //White Castling
+                if((board.Castling & CastlingRights.WhiteKingSide) != 0 && 
+                board.Squares[5]==Piece.Empty && 
+                board.Squares[6] == Piece.Empty)
+                {
+                    moves.Add(new Move(4,6,Piece.Empty, MoveFlags.Castling));
+                }
+
+                if ((board.Castling & CastlingRights.WhiteQueenSide) != 0 && 
+                board.Squares[3] == Piece.Empty && 
+                board.Squares[2] == Piece.Empty && 
+                board.Squares[1] == Piece.Empty)
+                {
+                    moves.Add(new Move(4, 2, Piece.Empty, MoveFlags.Castling));
+                }
+                //Black Castling
+                else
+                {
+                    if ((board.Castling & CastlingRights.BlackKingSide) != 0 &&
+                        board.Squares[61] == Piece.Empty &&
+                        board.Squares[62] == Piece.Empty)
+                    {
+                        moves.Add(new Move(60, 62, Piece.Empty, MoveFlags.Castling));
+                    }
+
+
+                    if ((board.Castling & CastlingRights.BlackQueenSide) != 0 &&
+                        board.Squares[59] == Piece.Empty &&
+                        board.Squares[58] == Piece.Empty &&
+                        board.Squares[57] == Piece.Empty)
+                    {
+                        moves.Add(new Move(60, 58, Piece.Empty, MoveFlags.Castling));
+                    }
+                }
+            }
+        }
+
+
+
+
     }
 }
 // TO DO:
-// Add bishop
-// Add rooks
-// add queen sliding moves
 
 // add king and castling
  

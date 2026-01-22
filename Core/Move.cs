@@ -56,4 +56,5 @@ namespace ChessEngine.Core
             _ => ' '
         };
     }
+    
 }

@@ -121,9 +121,79 @@ namespace ChessEngine.Core
             }
 
             // TODO: En passant capture
-            // TODO: Castling rook move
-            // TODO: Update castling rights properly
+            
+            
 
+            //Castling rights
+            if (piece == Piece.WK)
+                Castling &= ~(CastlingRights.WhiteKingSide | CastlingRights.WhiteQueenSide);
+
+            if (piece == Piece.BK)
+                Castling &= ~(CastlingRights.BlackKingSide | CastlingRights.BlackQueenSide);
+            
+            // White rooks
+            if (from == 0)
+                Castling &= ~CastlingRights.WhiteQueenSide;
+            else if (from == 7)
+                Castling &= ~CastlingRights.WhiteKingSide;
+
+            // Black rooks
+            else if (from == 56)
+                Castling &= ~CastlingRights.BlackQueenSide;
+            else if (from == 63)
+                Castling &= ~CastlingRights.BlackKingSide;
+
+            //Removed rights when rook is captured
+            if (capturedPiece == Piece.WR)
+            {
+                if (to == 0)
+                    Castling &= ~CastlingRights.WhiteQueenSide;
+                else if (to == 7)
+                    Castling &= ~CastlingRights.WhiteKingSide;
+            }
+            else if (capturedPiece == Piece.BR)
+            {
+                if (to == 56)
+                    Castling &= ~CastlingRights.BlackQueenSide;
+                else if (to == 63)
+                    Castling &= ~CastlingRights.BlackKingSide;
+            }
+            
+
+            //Castling rook move
+            if ((move.Flags & MoveFlags.Castling) != 0)
+            {
+                if (piece == Piece.WK)
+                {
+                    // White king side
+                    if (move.To == 6)
+                    {
+                        Squares[5] = Piece.WR; // rook f1
+                        Squares[7] = Piece.Empty;
+                    }
+                    // White queen side
+                    else if (move.To == 2)
+                    {
+                        Squares[3] = Piece.WR; // rook d1
+                        Squares[0] = Piece.Empty;
+                    }
+                }
+                else if (piece == Piece.BK)
+                {
+                    // Black king side
+                    if (move.To == 62)
+                    {
+                        Squares[61] = Piece.BR; // rook f8
+                        Squares[63] = Piece.Empty;
+                    }
+                    // Black queen side
+                    else if (move.To == 58)
+                    {
+                        Squares[59] = Piece.BR; // rook d8
+                        Squares[56] = Piece.Empty;
+                    }
+                }
+            }
             WhiteToMove = !WhiteToMove;
             if (WhiteToMove)
                 FullMoveNumber++;
@@ -166,6 +236,11 @@ namespace ChessEngine.Core
         public static bool IsBlack(Piece p)
         {
             return p >= Piece.BP && p <= Piece.BK;
+        }
+
+        public bool HasCastlingRight(CastlingRights right)
+        {
+            return (Castling & right) != 0;
         }
     }
 
