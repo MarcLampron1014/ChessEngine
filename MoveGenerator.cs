@@ -5,6 +5,7 @@ namespace ChessEngine
 {
     public static class MoveGenerator
     {
+        // static int numbered = 0;
         private static readonly int[] KnightOffsets =
         {
             15, 17, 10, 6, -15, -17, -10, -6
@@ -26,7 +27,7 @@ namespace ChessEngine
         {
             var moves = GenerateMoves(board);
             var legalMoves = new List<Move>();
-
+            
             foreach (var move in moves)
             {
                 // Store which side is moving before the move
@@ -36,7 +37,11 @@ namespace ChessEngine
 
                 // Check if the side that just moved is in check
                 bool inCheck = board.IsKingInCheck(sideThatMoved);
-
+                
+                // if(inCheck){
+                //     Console.WriteLine($"\nIllegal move #{numbered} found: {move} (side that moved: {(sideThatMoved ? "White" : "Black")})");
+                //     numbered=numbered+1;
+                // }
                 board.UndoMove(move);
 
                 if (!inCheck)
@@ -45,6 +50,15 @@ namespace ChessEngine
 
             return legalMoves;
         }
+        // public static String PrintLine(List<Move> moves)
+        // {
+        //     String line = "";
+        //     foreach(var move in moves)
+        //     {
+        //         line+=move.ToString();
+        //     }
+        //     return line;
+        // }
 
         public static List<Move> GenerateMoves(Board board)
         {
@@ -231,9 +245,21 @@ namespace ChessEngine
                     if(!IsOnBoard(to))
                         break;
                     
-                    //prevents rooks and queens from going around the board
+                    //prevents rooks and queens from going around the board horizontally
                     if((direction == 1 || direction == -1) && Math.Abs((to % 8) - (previous % 8)) > 1)
                         break;
+                    
+                    //prevents bishops and queens from going around the board diagonally
+                    //For diagonal moves, both file and rank must change by exactly 1
+                    if((direction == 7 || direction == 9 || direction == -7 || direction == -9))
+                    {
+                        int toFile = to % 8;
+                        int toRank = to / 8;
+                        int prevFile = previous % 8;
+                        int prevRank = previous / 8;
+                        if (Math.Abs(toFile - prevFile) != 1 || Math.Abs(toRank - prevRank) != 1)
+                            break;
+                    }
                     
                     Piece target = board.Squares[to];
                     if (target == Piece.Empty)

@@ -20,7 +20,7 @@ namespace ChessEngine
         {
             Board board = new Board();
 
-            for (int depth = 1; depth <= 4; depth++)
+            for (int depth = 1; depth <= 5; depth++)
             {
                 long nodes = Perft.Run(board, depth);
                 Console.WriteLine($"Perft({depth}) = {nodes}");

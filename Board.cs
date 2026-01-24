@@ -337,7 +337,12 @@ namespace ChessEngine
                     if (to < 0 || to >= 64)
                         break;
 
-                    if (Math.Abs((to % 8) - (prev % 8)) != 1)
+                    // For diagonal moves, both file and rank must change by exactly 1
+                    int toFile = to % 8;
+                    int toRank = to / 8;
+                    int prevFile = prev % 8;
+                    int prevRank = prev / 8;
+                    if (Math.Abs(toFile - prevFile) != 1 || Math.Abs(toRank - prevRank) != 1)
                         break;
 
                     Piece p = Squares[to];
@@ -428,9 +433,6 @@ namespace ChessEngine
                     break;
                 }
             }
-
-            if (kingSquare == -1)
-                return false; // King not found - shouldn't happen in legal positions
 
             return IsSquareAttacked(kingSquare, !white);
         }

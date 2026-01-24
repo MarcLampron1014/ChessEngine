@@ -9,7 +9,6 @@ namespace ChessEngine{
 
             long nodes = 0;
             List<Move> moves = MoveGenerator.GenerateLegalMoves(board);
-            
 
             foreach (var move in moves)
             {
