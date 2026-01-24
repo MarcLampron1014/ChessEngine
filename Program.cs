@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace ChessEngine
 {
@@ -22,8 +22,12 @@ namespace ChessEngine
 
             for (int depth = 1; depth <= 5; depth++)
             {
-                long nodes = Perft.Run(board, depth);
-                Console.WriteLine($"Perft({depth}) = {nodes}");
+                var result = Perft.Run(board, depth);
+                Console.WriteLine($"Perft({depth}) = {result.Nodes}");
+                Console.WriteLine($"  Captures: {result.Captures}");
+                Console.WriteLine($"  Checks: {result.Checks}");
+                Console.WriteLine($"  Checkmates: {result.Checkmates}");
+                Console.WriteLine();
             }
 
             Console.ReadLine();

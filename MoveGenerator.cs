@@ -174,7 +174,23 @@ namespace ChessEngine
                 }
             }
 
-            // En passant (placeholder — requires board.EnPassantSquare)
+            // En passant
+            if (board.EnPassantSquare != -1)
+            {
+                int epFile = board.EnPassantSquare % 8;
+                
+                // Check if pawn is on an adjacent file
+                if (Math.Abs(epFile - file) == 1)
+                {
+                    // The destination for en passant is the en passant square itself
+                    // Verify it's one square forward from the pawn
+                    int epCaptureSquare = from + direction;
+                    if (epCaptureSquare == board.EnPassantSquare)
+                    {
+                        moves.Add(new Move(from, board.EnPassantSquare, Piece.Empty, MoveFlags.EnPassant | MoveFlags.Capture));
+                    }
+                }
+            }
         }
         
         

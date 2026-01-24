@@ -117,7 +117,8 @@ namespace ChessEngine
             Piece capturedPiece = Squares[to];
             if ((move.Flags & MoveFlags.EnPassant) != 0)
             {
-                int capSq = WhiteToMove ? to - 8 : to + 8;
+                // For en passant, captured pawn is one rank behind the destination
+                int capSq = piece == Piece.WP ? to - 8 : to + 8;
                 capturedPiece = Squares[capSq];
             }
 
@@ -151,7 +152,8 @@ namespace ChessEngine
             // En passant capture
             if ((move.Flags & MoveFlags.EnPassant) != 0)
             {
-                int capSq = WhiteToMove ? to - 8 : to + 8;
+                // For en passant, captured pawn is one rank behind the destination
+                int capSq = piece == Piece.WP ? to - 8 : to + 8;
                 Squares[capSq] = Piece.Empty;
             }
 
