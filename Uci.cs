@@ -11,6 +11,9 @@ namespace ChessEngine
 
         public static void Run()
         {
+            // Some GUIs buffer-read; force immediate output.
+            Console.Out.Flush();
+
             var board = new Board();
 
             while (true)
@@ -30,14 +33,14 @@ namespace ChessEngine
                 switch (cmd)
                 {
                     case "uci":
-                        Console.WriteLine($"id name {EngineName}");
-                        Console.WriteLine($"id author {EngineAuthor}");
+                        WriteLineFlush($"id name {EngineName}");
+                        WriteLineFlush($"id author {EngineAuthor}");
                         // No options yet
-                        Console.WriteLine("uciok");
+                        WriteLineFlush("uciok");
                         break;
 
                     case "isready":
-                        Console.WriteLine("readyok");
+                        WriteLineFlush("readyok");
                         break;
 
                     case "ucinewgame":
@@ -155,18 +158,19 @@ namespace ChessEngine
             if (!result.BestMove.Equals(default(Move)))
                 board.MakeMove(result.BestMove);
 
-            // UCI requires a bestmove line even if we have none (use 0000 as null move).
-            string best = result.DepthReached == 0 ? "0000" : result.BestMove.ToString();
-            Console.WriteLine($"bestmove {best}");
+            // Always return a move if we have one; GUIs may dislike 0000.
+            string best = result.BestMove.Equals(default(Move)) ? "0000" : result.BestMove.ToString();
+            WriteLineFlush($"bestmove {best}");
         }
 
         private static int ComputeTimeBudgetMs(bool whiteToMove, int movetime, int wtime, int btime, int winc, int binc)
         {
             // Safety margin to avoid flagging on time.
             const int safety = 20;
+            const int hardCapMs = 2000; // keep Arena responsive by default
 
             if (movetime > 0)
-                return Math.Max(1, movetime - safety);
+                return Math.Max(1, Math.Min(hardCapMs, movetime - safety));
 
             int remaining = whiteToMove ? wtime : btime;
             int inc = whiteToMove ? winc : binc;
@@ -182,8 +186,15 @@ namespace ChessEngine
             // Cap to a reasonable fraction of remaining time.
             int cap = Math.Max(50, remaining / 5);
             budget = Math.Min(budget, cap);
+            budget = Math.Min(budget, hardCapMs);
 
             return Math.Max(1, budget - safety);
+        }
+
+        private static void WriteLineFlush(string line)
+        {
+            Console.WriteLine(line);
+            Console.Out.Flush();
         }
 
         private static bool TryApplyUciMove(Board board, string uciMove)
