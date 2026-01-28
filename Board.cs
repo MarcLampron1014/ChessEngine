@@ -106,6 +106,27 @@ namespace ChessEngine
 
             history.Clear();
         }
+
+        public void LoadPosition(
+            Piece[] squares,
+            bool whiteToMove,
+            CastlingRights castling,
+            int enPassantSquare,
+            int halfMoveClock,
+            int fullMoveNumber)
+        {
+            if (squares == null) throw new ArgumentNullException(nameof(squares));
+            if (squares.Length != 64) throw new ArgumentException("Squares must have length 64", nameof(squares));
+
+            Array.Copy(squares, Squares, 64);
+            WhiteToMove = whiteToMove;
+            Castling = castling;
+            EnPassantSquare = enPassantSquare;
+            HalfMoveClock = halfMoveClock;
+            FullMoveNumber = fullMoveNumber;
+
+            history.Clear();
+        }
         
         public void MakeMove(Move move)
         {

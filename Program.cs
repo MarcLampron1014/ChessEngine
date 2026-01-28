@@ -18,19 +18,8 @@ namespace ChessEngine
         // }
         static void Main(string[] args)
         {
-            Board board = new Board();
-
-            for (int depth = 1; depth <= 5; depth++)
-            {
-                var result = Perft.Run(board, depth);
-                Console.WriteLine($"Perft({depth}) = {result.Nodes}");
-                Console.WriteLine($"  Captures: {result.Captures}");
-                Console.WriteLine($"  Checks: {result.Checks}");
-                Console.WriteLine($"  Checkmates: {result.Checkmates}");
-                Console.WriteLine();
-            }
-
-            Console.ReadLine();
+            // UCI loop for Arena (stdin/stdout).
+            Uci.Run();
         }
     }
 }
