@@ -75,6 +75,7 @@ namespace ChessEngine
         public CastlingRights CastlingRights;
         public int HalfMoveClock;
         public ulong ZobristHash;
+        public int Phase;
     }
 
     public class Board
@@ -93,7 +94,25 @@ namespace ChessEngine
         public int FullMoveNumber { get; private set; }
         public ulong ZobristHash { get; private set; }
 
+        // Cached king squares for fast IsKingInCheck
+        private int _whiteKingSquare;
+        private int _blackKingSquare;
+
+        // Mailbox array for O(1) PieceAt lookup
+        private readonly Piece[] _pieces = new Piece[64];
+
+        // Incremental game phase (0 = endgame, 24 = opening)
+        private int _phase;
+        public int Phase => _phase;
+
+        // Phase values for each piece type
+        private const int KnightPhaseValue = 1;
+        private const int BishopPhaseValue = 1;
+        private const int RookPhaseValue = 2;
+        private const int QueenPhaseValue = 4;
+
         private readonly Stack<UndoInfo> _history = new Stack<UndoInfo>();
+        private readonly List<ulong> _positionHistory = new List<ulong>();
 
         public Board()
         {
@@ -104,6 +123,9 @@ namespace ChessEngine
         {
             WP = WN = WB = WR = WQ = WK = 0;
             BP = BN = BB = BR = BQ = BK = 0;
+
+            // Clear piece array
+            Array.Clear(_pieces, 0, 64);
 
             WR = Bitboard.SquareBB[0] | Bitboard.SquareBB[7];
             WN = Bitboard.SquareBB[1] | Bitboard.SquareBB[6];
@@ -119,7 +141,22 @@ namespace ChessEngine
             BK = Bitboard.SquareBB[60];
             BP = Bitboard.Rank7;
 
+            // Initialize piece array for starting position
+            _pieces[0] = Piece.WR; _pieces[1] = Piece.WN; _pieces[2] = Piece.WB; _pieces[3] = Piece.WQ;
+            _pieces[4] = Piece.WK; _pieces[5] = Piece.WB; _pieces[6] = Piece.WN; _pieces[7] = Piece.WR;
+            for (int i = 8; i < 16; i++) _pieces[i] = Piece.WP;
+            for (int i = 48; i < 56; i++) _pieces[i] = Piece.BP;
+            _pieces[56] = Piece.BR; _pieces[57] = Piece.BN; _pieces[58] = Piece.BB; _pieces[59] = Piece.BQ;
+            _pieces[60] = Piece.BK; _pieces[61] = Piece.BB; _pieces[62] = Piece.BN; _pieces[63] = Piece.BR;
+
             UpdateOccupancy();
+
+            // Cache king squares
+            _whiteKingSquare = 4;  // e1
+            _blackKingSquare = 60; // e8
+
+            // Initialize phase: 2N + 2B + 2R + Q = 2*1 + 2*1 + 2*2 + 4 = 12 per side = 24 total
+            _phase = 24;
 
             WhiteToMove = true;
             EnPassantSquare = -1;
@@ -129,7 +166,9 @@ namespace ChessEngine
             FullMoveNumber = 1;
 
             _history.Clear();
+            _positionHistory.Clear();
             ComputeHash();
+            _positionHistory.Add(ZobristHash);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -163,34 +202,14 @@ namespace ChessEngine
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public Piece PieceAt(int sq)
-        {
-            ulong mask = 1UL << sq;
-
-            if ((AllPieces & mask) == 0) return Piece.Empty;
-
-            if ((WP & mask) != 0) return Piece.WP;
-            if ((WN & mask) != 0) return Piece.WN;
-            if ((WB & mask) != 0) return Piece.WB;
-            if ((WR & mask) != 0) return Piece.WR;
-            if ((WQ & mask) != 0) return Piece.WQ;
-            if ((WK & mask) != 0) return Piece.WK;
-
-            if ((BP & mask) != 0) return Piece.BP;
-            if ((BN & mask) != 0) return Piece.BN;
-            if ((BB & mask) != 0) return Piece.BB;
-            if ((BR & mask) != 0) return Piece.BR;
-            if ((BQ & mask) != 0) return Piece.BQ;
-            if ((BK & mask) != 0) return Piece.BK;
-
-            return Piece.Empty;
-        }
+        public Piece PieceAt(int sq) => _pieces[sq];
 
         public void SetPiece(int sq, Piece p)
         {
             ClearPiece(sq);
             if (p == Piece.Empty) return;
 
+            _pieces[sq] = p;
             ulong mask = 1UL << sq;
             switch (p)
             {
@@ -212,6 +231,7 @@ namespace ChessEngine
 
         public void ClearPiece(int sq)
         {
+            _pieces[sq] = Piece.Empty;
             ulong mask = ~(1UL << sq);
 
             WP &= mask; WN &= mask; WB &= mask;
@@ -225,6 +245,8 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void MovePiece(int from, int to, Piece p)
         {
+            _pieces[from] = Piece.Empty;
+            _pieces[to] = p;
             ulong fromTo = (1UL << from) | (1UL << to);
             switch (p)
             {
@@ -246,6 +268,7 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RemovePiece(int sq, Piece p)
         {
+            _pieces[sq] = Piece.Empty;
             ulong mask = ~(1UL << sq);
             switch (p)
             {
@@ -267,6 +290,7 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void AddPiece(int sq, Piece p)
         {
+            _pieces[sq] = p;
             ulong mask = 1UL << sq;
             switch (p)
             {
@@ -289,13 +313,64 @@ namespace ChessEngine
                                  int halfMoveClock, int fullMoveNumber)
         {
             UpdateOccupancy();
+            
+            // Rebuild piece array from bitboards (for FEN loading)
+            RebuildPieceArray();
+            
+            // Cache king squares
+            _whiteKingSquare = WK != 0 ? Bitboard.BitScanForward(WK) : -1;
+            _blackKingSquare = BK != 0 ? Bitboard.BitScanForward(BK) : -1;
+
+            // Calculate phase from piece counts
+            _phase = Bitboard.PopCount(WN | BN) * KnightPhaseValue +
+                     Bitboard.PopCount(WB | BB) * BishopPhaseValue +
+                     Bitboard.PopCount(WR | BR) * RookPhaseValue +
+                     Bitboard.PopCount(WQ | BQ) * QueenPhaseValue;
+            if (_phase > 24) _phase = 24;
+
             WhiteToMove = whiteToMove;
             Castling = castling;
             EnPassantSquare = enPassantSquare;
             HalfMoveClock = halfMoveClock;
             FullMoveNumber = fullMoveNumber;
             _history.Clear();
+            _positionHistory.Clear();
             ComputeHash();
+            _positionHistory.Add(ZobristHash);
+        }
+
+        private void RebuildPieceArray()
+        {
+            Array.Clear(_pieces, 0, 64);
+            for (int sq = 0; sq < 64; sq++)
+            {
+                ulong mask = 1UL << sq;
+                if ((WP & mask) != 0) _pieces[sq] = Piece.WP;
+                else if ((WN & mask) != 0) _pieces[sq] = Piece.WN;
+                else if ((WB & mask) != 0) _pieces[sq] = Piece.WB;
+                else if ((WR & mask) != 0) _pieces[sq] = Piece.WR;
+                else if ((WQ & mask) != 0) _pieces[sq] = Piece.WQ;
+                else if ((WK & mask) != 0) _pieces[sq] = Piece.WK;
+                else if ((BP & mask) != 0) _pieces[sq] = Piece.BP;
+                else if ((BN & mask) != 0) _pieces[sq] = Piece.BN;
+                else if ((BB & mask) != 0) _pieces[sq] = Piece.BB;
+                else if ((BR & mask) != 0) _pieces[sq] = Piece.BR;
+                else if ((BQ & mask) != 0) _pieces[sq] = Piece.BQ;
+                else if ((BK & mask) != 0) _pieces[sq] = Piece.BK;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int GetPhaseValue(Piece p)
+        {
+            return p switch
+            {
+                Piece.WN or Piece.BN => KnightPhaseValue,
+                Piece.WB or Piece.BB => BishopPhaseValue,
+                Piece.WR or Piece.BR => RookPhaseValue,
+                Piece.WQ or Piece.BQ => QueenPhaseValue,
+                _ => 0
+            };
         }
         
         public void MakeMove(Move move)
@@ -317,7 +392,8 @@ namespace ChessEngine
                 EnPassantSquare = EnPassantSquare,
                 CastlingRights = Castling,
                 HalfMoveClock = HalfMoveClock,
-                ZobristHash = ZobristHash
+                ZobristHash = ZobristHash,
+                Phase = _phase
             });
 
             ulong hash = ZobristHash;
@@ -337,6 +413,8 @@ namespace ChessEngine
             {
                 RemovePiece(to, capturedPiece);
                 hash ^= Zobrist.PieceKeys[(int)capturedPiece, to];
+                // Decrement phase for captured piece
+                _phase -= GetPhaseValue(capturedPiece);
             }
 
             MovePiece(from, to, piece);
@@ -349,6 +427,8 @@ namespace ChessEngine
                 AddPiece(to, move.Promotion);
                 hash ^= Zobrist.PieceKeys[(int)piece, to];
                 hash ^= Zobrist.PieceKeys[(int)move.Promotion, to];
+                // Increment phase for promoted piece (pawn has no phase, promoted piece does)
+                _phase += GetPhaseValue(move.Promotion);
             }
 
             if ((move.Flags & MoveFlags.EnPassant) != 0)
@@ -359,6 +439,7 @@ namespace ChessEngine
                 {
                     RemovePiece(capSq, capturedPiece);
                     hash ^= Zobrist.PieceKeys[(int)capturedPiece, capSq];
+                    // Pawns have no phase value, so no phase update needed for en passant
                 }
             }
 
@@ -368,9 +449,15 @@ namespace ChessEngine
                 EnPassantSquare = from - 8;
 
             if (piece == Piece.WK)
+            {
+                _whiteKingSquare = to;
                 Castling &= ~(CastlingRights.WhiteKingSide | CastlingRights.WhiteQueenSide);
+            }
             else if (piece == Piece.BK)
+            {
+                _blackKingSquare = to;
                 Castling &= ~(CastlingRights.BlackKingSide | CastlingRights.BlackQueenSide);
+            }
 
             if (from == 0) Castling &= ~CastlingRights.WhiteQueenSide;
             else if (from == 7) Castling &= ~CastlingRights.WhiteKingSide;
@@ -434,6 +521,8 @@ namespace ChessEngine
             WhiteToMove = !WhiteToMove;
             if (WhiteToMove)
                 FullMoveNumber++;
+
+            _positionHistory.Add(ZobristHash);
         }
 
         public void UndoMove(Move move)
@@ -471,6 +560,12 @@ namespace ChessEngine
 
             MovePiece(to, from, movedPiece);
 
+            // Restore king square if king was moved
+            if (movedPiece == Piece.WK)
+                _whiteKingSquare = from;
+            else if (movedPiece == Piece.BK)
+                _blackKingSquare = from;
+
             if (undo.CapturedPiece != Piece.Empty)
             {
                 if ((move.Flags & MoveFlags.EnPassant) != 0)
@@ -490,6 +585,10 @@ namespace ChessEngine
             Castling = undo.CastlingRights;
             HalfMoveClock = undo.HalfMoveClock;
             ZobristHash = undo.ZobristHash;
+            _phase = undo.Phase;
+
+            if (_positionHistory.Count > 0)
+                _positionHistory.RemoveAt(_positionHistory.Count - 1);
         }
 
         public bool HasCastlingRight(CastlingRights right) => (Castling & right) != 0;
@@ -569,16 +668,43 @@ namespace ChessEngine
             return false;
         }
 
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsKingInCheck(bool white)
         {
-            ulong kingBB = white ? WK : BK;
-            if (kingBB == 0)
-                return false;
-            int kingSquare = Bitboard.BitScanForward(kingBB);
-            return IsSquareAttacked(kingSquare, !white);
+            int kingSquare = white ? _whiteKingSquare : _blackKingSquare;
+            return kingSquare >= 0 && IsSquareAttacked(kingSquare, !white);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int KingSquare(bool white) => Bitboard.BitScanForward(white ? WK : BK);
+        public int KingSquare(bool white) => white ? _whiteKingSquare : _blackKingSquare;
+
+        /// <summary>
+        /// Check if the current position is a repetition (has occurred before).
+        /// Returns true if position occurred at least once before (2-fold).
+        /// For search, we treat 2-fold as draw since we're about to make it 3-fold.
+        /// </summary>
+        public bool IsRepetition()
+        {
+            if (_positionHistory.Count < 4)
+                return false;
+
+            // Only need to check positions where same side was to move
+            // and within the last HalfMoveClock moves (no captures/pawn moves reset this)
+            int limit = Math.Min(_positionHistory.Count - 1, HalfMoveClock);
+            
+            for (int i = _positionHistory.Count - 3; i >= _positionHistory.Count - 1 - limit; i -= 2)
+            {
+                if (i < 0) break;
+                if (_positionHistory[i] == ZobristHash)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Check if we've reached the 50-move rule (100 half-moves without capture or pawn move).
+        /// </summary>
+        public bool IsFiftyMoveRule() => HalfMoveClock >= 100;
     }
 }

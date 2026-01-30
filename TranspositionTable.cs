@@ -131,5 +131,29 @@ namespace ChessEngine
             ref TTEntry entry = ref _table[index];
             return entry.Hash == hash ? TTEntry.DecodeMove(entry.BestMove) : default;
         }
+
+        /// <summary>
+        /// Probe for singular extension - returns true if we have a useful TT entry
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool ProbeForSingular(ulong hash, int depth, out int score, out TTFlag flag)
+        {
+            int index = (int)(hash & _mask);
+            ref TTEntry entry = ref _table[index];
+
+            score = 0;
+            flag = TTFlag.None;
+
+            if (entry.Hash != hash)
+                return false;
+
+            // Need sufficient depth for singular extension
+            if (entry.Depth < depth - 3)
+                return false;
+
+            score = entry.Score;
+            flag = entry.Flag;
+            return true;
+        }
     }
 }
