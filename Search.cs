@@ -212,9 +212,8 @@ namespace ChessEngine
 
         private static int EvaluateForSideToMove(Board board)
         {
-            // Evaluator is White-centric. Convert to side-to-move perspective for negamax.
-            int eval = Evaluator.Evaluate(board);
-            return board.WhiteToMove ? eval : -eval;
+            // Evaluator.Evaluate already returns score from side-to-move perspective.
+            return Evaluator.Evaluate(board);
         }
 
         private static void CheckTime(Stopwatch sw, int timeMs)
@@ -239,7 +238,7 @@ namespace ChessEngine
 
             if (move.IsCapture)
             {
-                Piece attacker = board.Squares[move.From];
+                Piece attacker = board.PieceAt(move.From);
                 Piece victim;
 
                 if (move.IsEnPassant)
@@ -248,7 +247,7 @@ namespace ChessEngine
                 }
                 else
                 {
-                    victim = board.Squares[move.To];
+                    victim = board.PieceAt(move.To);
                 }
 
                 int victimValue = Evaluator.GetPieceValue(victim);
