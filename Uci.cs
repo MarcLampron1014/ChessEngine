@@ -42,6 +42,7 @@ namespace ChessEngine
                     case "ucinewgame":
                         board = new Board();
                         Search.ClearHash();
+                        Evaluator.ClearCache();
                         break;
                     case "setoption":
                         HandleSetOption(parts);

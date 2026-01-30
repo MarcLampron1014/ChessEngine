@@ -76,6 +76,8 @@ namespace ChessEngine
         public int HalfMoveClock;
         public ulong ZobristHash;
         public int Phase;
+        public int MaterialMG;
+        public int MaterialEG;
     }
 
     public class Board
@@ -104,6 +106,13 @@ namespace ChessEngine
         // Incremental game phase (0 = endgame, 24 = opening)
         private int _phase;
         public int Phase => _phase;
+
+        // Incremental material scores (middlegame and endgame)
+        // Positive = white advantage, negative = black advantage
+        private int _materialMG;
+        private int _materialEG;
+        public int MaterialMG => _materialMG;
+        public int MaterialEG => _materialEG;
 
         // Phase values for each piece type
         private const int KnightPhaseValue = 1;
@@ -157,6 +166,10 @@ namespace ChessEngine
 
             // Initialize phase: 2N + 2B + 2R + Q = 2*1 + 2*1 + 2*2 + 4 = 12 per side = 24 total
             _phase = 24;
+
+            // Initialize material (starting position is equal, so 0)
+            _materialMG = 0;
+            _materialEG = 0;
 
             WhiteToMove = true;
             EnPassantSquare = -1;
@@ -328,6 +341,9 @@ namespace ChessEngine
                      Bitboard.PopCount(WQ | BQ) * QueenPhaseValue;
             if (_phase > 24) _phase = 24;
 
+            // Compute material balance from piece counts
+            ComputeMaterial();
+
             WhiteToMove = whiteToMove;
             Castling = castling;
             EnPassantSquare = enPassantSquare;
@@ -372,6 +388,89 @@ namespace ChessEngine
                 _ => 0
             };
         }
+
+        /// <summary>
+        /// Gets the middlegame material value for a piece (positive for white, negative for black).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int GetMaterialMG(Piece p)
+        {
+            var ep = EvalParams.Instance;
+            return p switch
+            {
+                Piece.WP => ep.PawnValueMG,
+                Piece.WN => ep.KnightValueMG,
+                Piece.WB => ep.BishopValueMG,
+                Piece.WR => ep.RookValueMG,
+                Piece.WQ => ep.QueenValueMG,
+                Piece.BP => -ep.PawnValueMG,
+                Piece.BN => -ep.KnightValueMG,
+                Piece.BB => -ep.BishopValueMG,
+                Piece.BR => -ep.RookValueMG,
+                Piece.BQ => -ep.QueenValueMG,
+                _ => 0
+            };
+        }
+
+        /// <summary>
+        /// Gets the endgame material value for a piece (positive for white, negative for black).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int GetMaterialEG(Piece p)
+        {
+            var ep = EvalParams.Instance;
+            return p switch
+            {
+                Piece.WP => ep.PawnValueEG,
+                Piece.WN => ep.KnightValueEG,
+                Piece.WB => ep.BishopValueEG,
+                Piece.WR => ep.RookValueEG,
+                Piece.WQ => ep.QueenValueEG,
+                Piece.BP => -ep.PawnValueEG,
+                Piece.BN => -ep.KnightValueEG,
+                Piece.BB => -ep.BishopValueEG,
+                Piece.BR => -ep.RookValueEG,
+                Piece.BQ => -ep.QueenValueEG,
+                _ => 0
+            };
+        }
+
+        /// <summary>
+        /// Computes material balance from scratch based on piece bitboards.
+        /// Call after loading from FEN.
+        /// </summary>
+        public void ComputeMaterial()
+        {
+            var ep = EvalParams.Instance;
+            _materialMG = 0;
+            _materialEG = 0;
+
+            // White pieces
+            _materialMG += Bitboard.PopCount(WP) * ep.PawnValueMG;
+            _materialMG += Bitboard.PopCount(WN) * ep.KnightValueMG;
+            _materialMG += Bitboard.PopCount(WB) * ep.BishopValueMG;
+            _materialMG += Bitboard.PopCount(WR) * ep.RookValueMG;
+            _materialMG += Bitboard.PopCount(WQ) * ep.QueenValueMG;
+
+            _materialEG += Bitboard.PopCount(WP) * ep.PawnValueEG;
+            _materialEG += Bitboard.PopCount(WN) * ep.KnightValueEG;
+            _materialEG += Bitboard.PopCount(WB) * ep.BishopValueEG;
+            _materialEG += Bitboard.PopCount(WR) * ep.RookValueEG;
+            _materialEG += Bitboard.PopCount(WQ) * ep.QueenValueEG;
+
+            // Black pieces (negative contribution)
+            _materialMG -= Bitboard.PopCount(BP) * ep.PawnValueMG;
+            _materialMG -= Bitboard.PopCount(BN) * ep.KnightValueMG;
+            _materialMG -= Bitboard.PopCount(BB) * ep.BishopValueMG;
+            _materialMG -= Bitboard.PopCount(BR) * ep.RookValueMG;
+            _materialMG -= Bitboard.PopCount(BQ) * ep.QueenValueMG;
+
+            _materialEG -= Bitboard.PopCount(BP) * ep.PawnValueEG;
+            _materialEG -= Bitboard.PopCount(BN) * ep.KnightValueEG;
+            _materialEG -= Bitboard.PopCount(BB) * ep.BishopValueEG;
+            _materialEG -= Bitboard.PopCount(BR) * ep.RookValueEG;
+            _materialEG -= Bitboard.PopCount(BQ) * ep.QueenValueEG;
+        }
         
         public void MakeMove(Move move)
         {
@@ -393,7 +492,9 @@ namespace ChessEngine
                 CastlingRights = Castling,
                 HalfMoveClock = HalfMoveClock,
                 ZobristHash = ZobristHash,
-                Phase = _phase
+                Phase = _phase,
+                MaterialMG = _materialMG,
+                MaterialEG = _materialEG
             });
 
             ulong hash = ZobristHash;
@@ -415,6 +516,9 @@ namespace ChessEngine
                 hash ^= Zobrist.PieceKeys[(int)capturedPiece, to];
                 // Decrement phase for captured piece
                 _phase -= GetPhaseValue(capturedPiece);
+                // Update material (remove captured piece's value)
+                _materialMG -= GetMaterialMG(capturedPiece);
+                _materialEG -= GetMaterialEG(capturedPiece);
             }
 
             MovePiece(from, to, piece);
@@ -429,6 +533,11 @@ namespace ChessEngine
                 hash ^= Zobrist.PieceKeys[(int)move.Promotion, to];
                 // Increment phase for promoted piece (pawn has no phase, promoted piece does)
                 _phase += GetPhaseValue(move.Promotion);
+                // Update material (remove pawn value, add promoted piece value)
+                _materialMG -= GetMaterialMG(piece);
+                _materialMG += GetMaterialMG(move.Promotion);
+                _materialEG -= GetMaterialEG(piece);
+                _materialEG += GetMaterialEG(move.Promotion);
             }
 
             if ((move.Flags & MoveFlags.EnPassant) != 0)
@@ -439,7 +548,9 @@ namespace ChessEngine
                 {
                     RemovePiece(capSq, capturedPiece);
                     hash ^= Zobrist.PieceKeys[(int)capturedPiece, capSq];
-                    // Pawns have no phase value, so no phase update needed for en passant
+                    // Update material for en passant capture (remove enemy pawn value)
+                    _materialMG -= GetMaterialMG(capturedPiece);
+                    _materialEG -= GetMaterialEG(capturedPiece);
                 }
             }
 
@@ -586,6 +697,8 @@ namespace ChessEngine
             HalfMoveClock = undo.HalfMoveClock;
             ZobristHash = undo.ZobristHash;
             _phase = undo.Phase;
+            _materialMG = undo.MaterialMG;
+            _materialEG = undo.MaterialEG;
 
             if (_positionHistory.Count > 0)
                 _positionHistory.RemoveAt(_positionHistory.Count - 1);
