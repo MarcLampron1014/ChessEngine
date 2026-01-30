@@ -5,24 +5,20 @@ namespace ChessEngine
 {
     public static class Evaluator
     {
-        // Material values in centipawns
         private const int PawnValue = 100;
         private const int KnightValue = 320;
         private const int BishopValue = 330;
         private const int RookValue = 500;
         private const int QueenValue = 900;
 
-        // Bonus values
         private const int BishopPairBonus = 30;
         private const int RookOpenFileBonus = 20;
         private const int RookSemiOpenFileBonus = 10;
         private const int DoubledPawnPenalty = -10;
         private const int IsolatedPawnPenalty = -20;
-        private const int PassedPawnBonus = 20;
         private const int MobilityBonus = 2;
         private const int KingShieldBonus = 10;
 
-        // Piece-square tables (from White's perspective)
         private static readonly int[] PawnPst =
         {
             0, 0, 0, 0, 0, 0, 0, 0,
@@ -107,12 +103,8 @@ namespace ChessEngine
             -50, -30, -30, -30, -30, -30, -30, -50,
         };
 
-        // Passed pawn bonus by rank (from White's perspective, rank 0-7)
         private static readonly int[] PassedPawnBonusByRank = { 0, 10, 20, 30, 50, 80, 120, 0 };
 
-        /// <summary>
-        /// Main evaluation function. Returns score from the perspective of the side to move.
-        /// </summary>
         public static int Evaluate(Board board)
         {
             int score = 0;
@@ -306,9 +298,6 @@ namespace ChessEngine
             return score;
         }
 
-        /// <summary>
-        /// Get mask of squares where an enemy pawn would block this pawn from being passed.
-        /// </summary>
         private static ulong GetPassedPawnMask(int sq, bool white)
         {
             int file = Bitboard.FileOf(sq);
@@ -498,9 +487,6 @@ namespace ChessEngine
             return score;
         }
 
-        /// <summary>
-        /// Get the material value of a piece (used by search for move ordering).
-        /// </summary>
         public static int GetPieceValue(Piece p)
         {
             return p switch

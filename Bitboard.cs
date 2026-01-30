@@ -5,12 +5,11 @@ using System.Runtime.CompilerServices;
 namespace ChessEngine
 {
     /// <summary>
-    /// Core bitboard utilities, constants, and pre-computed attack tables.
-    /// Square mapping: 0 = a1, 7 = h1, 56 = a8, 63 = h8
+    /// Core bitboard utilities and pre-computed attack tables.
+    /// Square mapping: a1=0, h1=7, a8=56, h8=63.
     /// </summary>
     public static class Bitboard
     {
-        // File masks
         public const ulong FileA = 0x0101010101010101UL;
         public const ulong FileB = 0x0202020202020202UL;
         public const ulong FileC = 0x0404040404040404UL;
@@ -20,7 +19,6 @@ namespace ChessEngine
         public const ulong FileG = 0x4040404040404040UL;
         public const ulong FileH = 0x8080808080808080UL;
 
-        // Rank masks
         public const ulong Rank1 = 0x00000000000000FFUL;
         public const ulong Rank2 = 0x000000000000FF00UL;
         public const ulong Rank3 = 0x0000000000FF0000UL;
@@ -30,36 +28,24 @@ namespace ChessEngine
         public const ulong Rank7 = 0x00FF000000000000UL;
         public const ulong Rank8 = 0xFF00000000000000UL;
 
-        // File masks array for easy indexing
         public static readonly ulong[] FileMasks = { FileA, FileB, FileC, FileD, FileE, FileF, FileG, FileH };
-        
-        // Rank masks array for easy indexing
         public static readonly ulong[] RankMasks = { Rank1, Rank2, Rank3, Rank4, Rank5, Rank6, Rank7, Rank8 };
 
-        // Not file masks (for shift operations)
         public const ulong NotFileA = ~FileA;
         public const ulong NotFileH = ~FileH;
         public const ulong NotFileAB = ~(FileA | FileB);
         public const ulong NotFileGH = ~(FileG | FileH);
 
-        // Pre-computed attack tables
         public static readonly ulong[] KnightAttacks = new ulong[64];
         public static readonly ulong[] KingAttacks = new ulong[64];
-        public static readonly ulong[][] PawnAttacks = new ulong[2][]; // [color][square]
-        public static readonly ulong[] SquareBB = new ulong[64]; // Single bit for each square
-
-        // Between and line bitboards for pin/check detection
-        public static readonly ulong[,] BetweenBB = new ulong[64, 64]; // Squares between two squares (exclusive)
-        public static readonly ulong[,] LineBB = new ulong[64, 64]; // Full line through two squares
-
-        // Adjacent file masks for pawn structure evaluation
+        public static readonly ulong[][] PawnAttacks = new ulong[2][];
+        public static readonly ulong[] SquareBB = new ulong[64];
+        public static readonly ulong[,] BetweenBB = new ulong[64, 64];
+        public static readonly ulong[,] LineBB = new ulong[64, 64];
         public static readonly ulong[] AdjacentFiles = new ulong[8];
 
-        private static bool _initialized = false;
+        private static bool _initialized;
 
-        /// <summary>
-        /// Initialize all pre-computed tables. Must be called before using bitboards.
-        /// </summary>
         public static void Init()
         {
             if (_initialized) return;
@@ -85,14 +71,11 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int BitScanReverse(ulong bb) => 63 - BitOperations.LeadingZeroCount(bb);
 
-        /// <summary>
-        /// Pop and return the index of the least significant bit.
-        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int PopLsb(ref ulong bb)
         {
             int idx = BitScanForward(bb);
-            bb &= bb - 1; // Clear the LSB
+            bb &= bb - 1;
             return idx;
         }
 
@@ -122,7 +105,7 @@ namespace ChessEngine
         public static int SquareOf(int file, int rank) => (rank << 3) | file;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static int MirrorSquare(int square) => square ^ 56; // Flip rank
+        public static int MirrorSquare(int square) => square ^ 56;
 
         #endregion
 

@@ -6,18 +6,14 @@ namespace ChessEngine
 {
     public static class MoveGenerator
     {
-        /// <summary>
-        /// Generate all legal moves for the current position.
-        /// </summary>
         public static List<Move> GenerateLegalMoves(Board board)
         {
             var moves = GenerateMoves(board);
             var legalMoves = new List<Move>(moves.Count);
-            
+
             foreach (var move in moves)
             {
                 bool sideThatMoved = board.WhiteToMove;
-                
                 board.MakeMove(move);
                 bool inCheck = board.IsKingInCheck(sideThatMoved);
                 board.UndoMove(move);
@@ -29,9 +25,6 @@ namespace ChessEngine
             return legalMoves;
         }
 
-        /// <summary>
-        /// Generate all pseudo-legal moves (may leave king in check).
-        /// </summary>
         public static List<Move> GenerateMoves(Board board)
         {
             var moves = new List<Move>(64);
@@ -59,9 +52,6 @@ namespace ChessEngine
             return moves;
         }
 
-        /// <summary>
-        /// Generate only capture moves (for quiescence search).
-        /// </summary>
         public static List<Move> GenerateCaptures(Board board)
         {
             var moves = new List<Move>(32);
@@ -97,50 +87,38 @@ namespace ChessEngine
             ulong pawns = white ? board.WP : board.BP;
             ulong enemies = white ? board.BlackPieces : board.WhitePieces;
             ulong empty = ~board.AllPieces;
-
             int direction = white ? 8 : -8;
-            ulong startRank = white ? Bitboard.Rank2 : Bitboard.Rank7;
-            ulong promotionRank = white ? Bitboard.Rank7 : Bitboard.Rank2;
             ulong prePromotionRank = white ? Bitboard.Rank8 : Bitboard.Rank1;
 
-            // Single push
             ulong singlePush = white ? Bitboard.ShiftNorth(pawns) : Bitboard.ShiftSouth(pawns);
             singlePush &= empty;
 
-            // Double push
-            ulong doublePush = white ? Bitboard.ShiftNorth(singlePush & Bitboard.Rank3) 
-                                     : Bitboard.ShiftSouth(singlePush & Bitboard.Rank6);
+            ulong doublePush = white
+                ? Bitboard.ShiftNorth(singlePush & Bitboard.Rank3)
+                : Bitboard.ShiftSouth(singlePush & Bitboard.Rank6);
             doublePush &= empty;
 
-            // Promotions
             ulong promotions = singlePush & prePromotionRank;
             singlePush &= ~prePromotionRank;
 
-            // Add single pushes
             while (singlePush != 0)
             {
                 int to = Bitboard.PopLsb(ref singlePush);
-                int from = to - direction;
-                moves.Add(new Move(from, to));
+                moves.Add(new Move(to - direction, to));
             }
 
-            // Add double pushes
             while (doublePush != 0)
             {
                 int to = Bitboard.PopLsb(ref doublePush);
-                int from = to - direction * 2;
-                moves.Add(new Move(from, to, Piece.Empty, MoveFlags.PawnDoublePush));
+                moves.Add(new Move(to - direction * 2, to, Piece.Empty, MoveFlags.PawnDoublePush));
             }
 
-            // Add promotions
             while (promotions != 0)
             {
                 int to = Bitboard.PopLsb(ref promotions);
-                int from = to - direction;
-                AddPromotions(from, to, white, moves);
+                AddPromotions(to - direction, to, white, moves);
             }
 
-            // Captures
             ulong leftCaptures, rightCaptures;
             if (white)
             {
@@ -149,65 +127,58 @@ namespace ChessEngine
             }
             else
             {
-                leftCaptures = Bitboard.ShiftSouthEast(pawns) & enemies;
-                rightCaptures = Bitboard.ShiftSouthWest(pawns) & enemies;
+                leftCaptures = Bitboard.ShiftSouthWest(pawns) & enemies;
+                rightCaptures = Bitboard.ShiftSouthEast(pawns) & enemies;
             }
 
-            // Left captures (promotions and non-promotions)
             ulong leftPromotions = leftCaptures & prePromotionRank;
             leftCaptures &= ~prePromotionRank;
 
             while (leftCaptures != 0)
             {
                 int to = Bitboard.PopLsb(ref leftCaptures);
-                int from = white ? to - 7 : to + 9;
-                moves.Add(new Move(from, to, Piece.Empty, MoveFlags.Capture));
+                moves.Add(new Move(white ? to - 7 : to + 9, to, Piece.Empty, MoveFlags.Capture));
             }
 
             while (leftPromotions != 0)
             {
                 int to = Bitboard.PopLsb(ref leftPromotions);
-                int from = white ? to - 7 : to + 9;
-                AddPromotions(from, to, white, moves, MoveFlags.Capture);
+                AddPromotions(white ? to - 7 : to + 9, to, white, moves, MoveFlags.Capture);
             }
 
-            // Right captures (promotions and non-promotions)
             ulong rightPromotions = rightCaptures & prePromotionRank;
             rightCaptures &= ~prePromotionRank;
 
             while (rightCaptures != 0)
             {
                 int to = Bitboard.PopLsb(ref rightCaptures);
-                int from = white ? to - 9 : to + 7;
-                moves.Add(new Move(from, to, Piece.Empty, MoveFlags.Capture));
+                moves.Add(new Move(white ? to - 9 : to + 7, to, Piece.Empty, MoveFlags.Capture));
             }
 
             while (rightPromotions != 0)
             {
                 int to = Bitboard.PopLsb(ref rightPromotions);
-                int from = white ? to - 9 : to + 7;
-                AddPromotions(from, to, white, moves, MoveFlags.Capture);
+                AddPromotions(white ? to - 9 : to + 7, to, white, moves, MoveFlags.Capture);
             }
 
             // En passant
-            if (board.EnPassantSquare != -1)
+            if (board.EnPassantSquare >= 0)
             {
-                ulong epBB = 1UL << board.EnPassantSquare;
-                ulong epAttackers;
+                int epSquare = board.EnPassantSquare;
+                int capSq = white ? epSquare - 8 : epSquare + 8;
+                Piece enemyPawn = white ? Piece.BP : Piece.WP;
 
-                if (white)
+                if (board.PieceAt(capSq) == enemyPawn)
                 {
-                    epAttackers = Bitboard.PawnAttacks[1][board.EnPassantSquare] & pawns;
-                }
-                else
-                {
-                    epAttackers = Bitboard.PawnAttacks[0][board.EnPassantSquare] & pawns;
-                }
+                    ulong epAttackers = white
+                        ? Bitboard.PawnAttacks[1][epSquare] & pawns
+                        : Bitboard.PawnAttacks[0][epSquare] & pawns;
 
-                while (epAttackers != 0)
-                {
-                    int from = Bitboard.PopLsb(ref epAttackers);
-                    moves.Add(new Move(from, board.EnPassantSquare, Piece.Empty, MoveFlags.EnPassant | MoveFlags.Capture));
+                    while (epAttackers != 0)
+                    {
+                        int from = Bitboard.PopLsb(ref epAttackers);
+                        moves.Add(new Move(from, epSquare, Piece.Empty, MoveFlags.EnPassant | MoveFlags.Capture));
+                    }
                 }
             }
         }
@@ -220,7 +191,6 @@ namespace ChessEngine
             ulong empty = ~board.AllPieces;
             int direction = white ? 8 : -8;
 
-            // Captures
             ulong leftCaptures, rightCaptures;
             if (white)
             {
@@ -229,63 +199,62 @@ namespace ChessEngine
             }
             else
             {
-                leftCaptures = Bitboard.ShiftSouthEast(pawns) & enemies;
-                rightCaptures = Bitboard.ShiftSouthWest(pawns) & enemies;
+                leftCaptures = Bitboard.ShiftSouthWest(pawns) & enemies;
+                rightCaptures = Bitboard.ShiftSouthEast(pawns) & enemies;
             }
 
-            // Left captures
             ulong leftPromotions = leftCaptures & prePromotionRank;
             leftCaptures &= ~prePromotionRank;
 
             while (leftCaptures != 0)
             {
                 int to = Bitboard.PopLsb(ref leftCaptures);
-                int from = white ? to - 7 : to + 9;
-                moves.Add(new Move(from, to, Piece.Empty, MoveFlags.Capture));
+                moves.Add(new Move(white ? to - 7 : to + 9, to, Piece.Empty, MoveFlags.Capture));
             }
 
             while (leftPromotions != 0)
             {
                 int to = Bitboard.PopLsb(ref leftPromotions);
-                int from = white ? to - 7 : to + 9;
-                AddPromotions(from, to, white, moves, MoveFlags.Capture);
+                AddPromotions(white ? to - 7 : to + 9, to, white, moves, MoveFlags.Capture);
             }
 
-            // Right captures
             ulong rightPromotions = rightCaptures & prePromotionRank;
             rightCaptures &= ~prePromotionRank;
 
             while (rightCaptures != 0)
             {
                 int to = Bitboard.PopLsb(ref rightCaptures);
-                int from = white ? to - 9 : to + 7;
-                moves.Add(new Move(from, to, Piece.Empty, MoveFlags.Capture));
+                moves.Add(new Move(white ? to - 9 : to + 7, to, Piece.Empty, MoveFlags.Capture));
             }
 
             while (rightPromotions != 0)
             {
                 int to = Bitboard.PopLsb(ref rightPromotions);
-                int from = white ? to - 9 : to + 7;
-                AddPromotions(from, to, white, moves, MoveFlags.Capture);
+                AddPromotions(white ? to - 9 : to + 7, to, white, moves, MoveFlags.Capture);
             }
 
             // En passant
-            if (board.EnPassantSquare != -1)
+            if (board.EnPassantSquare >= 0)
             {
-                ulong epAttackers;
-                if (white)
-                    epAttackers = Bitboard.PawnAttacks[1][board.EnPassantSquare] & pawns;
-                else
-                    epAttackers = Bitboard.PawnAttacks[0][board.EnPassantSquare] & pawns;
+                int epSquare = board.EnPassantSquare;
+                int capSq = white ? epSquare - 8 : epSquare + 8;
+                Piece enemyPawn = white ? Piece.BP : Piece.WP;
 
-                while (epAttackers != 0)
+                if (board.PieceAt(capSq) == enemyPawn)
                 {
-                    int from = Bitboard.PopLsb(ref epAttackers);
-                    moves.Add(new Move(from, board.EnPassantSquare, Piece.Empty, MoveFlags.EnPassant | MoveFlags.Capture));
+                    ulong epAttackers = white
+                        ? Bitboard.PawnAttacks[1][epSquare] & pawns
+                        : Bitboard.PawnAttacks[0][epSquare] & pawns;
+
+                    while (epAttackers != 0)
+                    {
+                        int from = Bitboard.PopLsb(ref epAttackers);
+                        moves.Add(new Move(from, epSquare, Piece.Empty, MoveFlags.EnPassant | MoveFlags.Capture));
+                    }
                 }
             }
 
-            // Promotion pushes (non-captures but included in quiescence)
+            // Promotion pushes (included in quiescence search)
             ulong singlePush = white ? Bitboard.ShiftNorth(pawns) : Bitboard.ShiftSouth(pawns);
             singlePush &= empty;
             ulong promotions = singlePush & prePromotionRank;
@@ -293,8 +262,7 @@ namespace ChessEngine
             while (promotions != 0)
             {
                 int to = Bitboard.PopLsb(ref promotions);
-                int from = to - direction;
-                AddPromotions(from, to, white, moves);
+                AddPromotions(to - direction, to, white, moves);
             }
         }
 
@@ -462,16 +430,12 @@ namespace ChessEngine
             while (attacks != 0)
             {
                 int to = Bitboard.PopLsb(ref attacks);
-
-                // Check if destination is attacked by enemy
-                if (board.IsSquareAttacked(to, !white))
-                    continue;
+                if (board.IsSquareAttacked(to, !white)) continue;
 
                 MoveFlags flags = Bitboard.HasBit(board.AllPieces, to) ? MoveFlags.Capture : MoveFlags.None;
                 moves.Add(new Move(from, to, Piece.Empty, flags));
             }
 
-            // Castling
             GenerateCastling(board, moves, white);
         }
 
@@ -485,10 +449,7 @@ namespace ChessEngine
             while (attacks != 0)
             {
                 int to = Bitboard.PopLsb(ref attacks);
-
-                if (board.IsSquareAttacked(to, !white))
-                    continue;
-
+                if (board.IsSquareAttacked(to, !white)) continue;
                 moves.Add(new Move(from, to, Piece.Empty, MoveFlags.Capture));
             }
         }
@@ -497,70 +458,46 @@ namespace ChessEngine
         {
             if (white)
             {
-                // White king side (e1 to g1)
-                if ((board.Castling & CastlingRights.WhiteKingSide) != 0)
+                // Kingside: e1 to g1
+                if ((board.Castling & CastlingRights.WhiteKingSide) != 0 &&
+                    (board.AllPieces & 0x60UL) == 0 &&
+                    !board.IsSquareAttacked(4, false) &&
+                    !board.IsSquareAttacked(5, false) &&
+                    !board.IsSquareAttacked(6, false))
                 {
-                    // Squares f1, g1 must be empty
-                    if ((board.AllPieces & 0x60UL) == 0)
-                    {
-                        // e1, f1, g1 must not be attacked
-                        if (!board.IsSquareAttacked(4, false) &&
-                            !board.IsSquareAttacked(5, false) &&
-                            !board.IsSquareAttacked(6, false))
-                        {
-                            moves.Add(new Move(4, 6, Piece.Empty, MoveFlags.Castling));
-                        }
-                    }
+                    moves.Add(new Move(4, 6, Piece.Empty, MoveFlags.Castling));
                 }
 
-                // White queen side (e1 to c1)
-                if ((board.Castling & CastlingRights.WhiteQueenSide) != 0)
+                // Queenside: e1 to c1
+                if ((board.Castling & CastlingRights.WhiteQueenSide) != 0 &&
+                    (board.AllPieces & 0x0EUL) == 0 &&
+                    !board.IsSquareAttacked(4, false) &&
+                    !board.IsSquareAttacked(3, false) &&
+                    !board.IsSquareAttacked(2, false))
                 {
-                    // Squares d1, c1, b1 must be empty
-                    if ((board.AllPieces & 0x0EUL) == 0)
-                    {
-                        // e1, d1, c1 must not be attacked
-                        if (!board.IsSquareAttacked(4, false) &&
-                            !board.IsSquareAttacked(3, false) &&
-                            !board.IsSquareAttacked(2, false))
-                        {
-                            moves.Add(new Move(4, 2, Piece.Empty, MoveFlags.Castling));
-                        }
-                    }
+                    moves.Add(new Move(4, 2, Piece.Empty, MoveFlags.Castling));
                 }
             }
             else
             {
-                // Black king side (e8 to g8)
-                if ((board.Castling & CastlingRights.BlackKingSide) != 0)
+                // Kingside: e8 to g8
+                if ((board.Castling & CastlingRights.BlackKingSide) != 0 &&
+                    (board.AllPieces & 0x6000000000000000UL) == 0 &&
+                    !board.IsSquareAttacked(60, true) &&
+                    !board.IsSquareAttacked(61, true) &&
+                    !board.IsSquareAttacked(62, true))
                 {
-                    // Squares f8, g8 must be empty
-                    if ((board.AllPieces & 0x6000000000000000UL) == 0)
-                    {
-                        // e8, f8, g8 must not be attacked
-                        if (!board.IsSquareAttacked(60, true) &&
-                            !board.IsSquareAttacked(61, true) &&
-                            !board.IsSquareAttacked(62, true))
-                        {
-                            moves.Add(new Move(60, 62, Piece.Empty, MoveFlags.Castling));
-                        }
-                    }
+                    moves.Add(new Move(60, 62, Piece.Empty, MoveFlags.Castling));
                 }
 
-                // Black queen side (e8 to c8)
-                if ((board.Castling & CastlingRights.BlackQueenSide) != 0)
+                // Queenside: e8 to c8
+                if ((board.Castling & CastlingRights.BlackQueenSide) != 0 &&
+                    (board.AllPieces & 0x0E00000000000000UL) == 0 &&
+                    !board.IsSquareAttacked(60, true) &&
+                    !board.IsSquareAttacked(59, true) &&
+                    !board.IsSquareAttacked(58, true))
                 {
-                    // Squares d8, c8, b8 must be empty
-                    if ((board.AllPieces & 0x0E00000000000000UL) == 0)
-                    {
-                        // e8, d8, c8 must not be attacked
-                        if (!board.IsSquareAttacked(60, true) &&
-                            !board.IsSquareAttacked(59, true) &&
-                            !board.IsSquareAttacked(58, true))
-                        {
-                            moves.Add(new Move(60, 58, Piece.Empty, MoveFlags.Castling));
-                        }
-                    }
+                    moves.Add(new Move(60, 58, Piece.Empty, MoveFlags.Castling));
                 }
             }
         }

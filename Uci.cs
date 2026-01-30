@@ -8,25 +8,23 @@ namespace ChessEngine
     {
         private const string EngineName = "ChessEngine";
         private const string EngineAuthor = "marcl";
+        private const int DefaultHashSizeMB = 64;
+
+        private static readonly TimeManager _timeManager = new TimeManager();
 
         public static void Run()
         {
-            // Some GUIs buffer-read; force immediate output.
             Console.Out.Flush();
-
             var board = new Board();
 
             while (true)
             {
                 string? line = Console.ReadLine();
-                if (line == null)
-                    break;
+                if (line == null) break;
 
                 line = line.Trim();
-                if (line.Length == 0)
-                    continue;
+                if (line.Length == 0) continue;
 
-                // Tokenize (UCI is whitespace-delimited).
                 string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 string cmd = parts[0];
 
@@ -35,39 +33,60 @@ namespace ChessEngine
                     case "uci":
                         WriteLineFlush($"id name {EngineName}");
                         WriteLineFlush($"id author {EngineAuthor}");
-                        // No options yet
+                        WriteLineFlush($"option name Hash type spin default {DefaultHashSizeMB} min 1 max 1024");
                         WriteLineFlush("uciok");
                         break;
-
                     case "isready":
                         WriteLineFlush("readyok");
                         break;
-
                     case "ucinewgame":
                         board = new Board();
+                        Search.ClearHash();
                         break;
-
+                    case "setoption":
+                        HandleSetOption(parts);
+                        break;
                     case "position":
                         HandlePosition(board, parts);
                         break;
-
                     case "go":
                         HandleGo(board, parts);
                         break;
-
                     case "quit":
                         return;
                 }
             }
         }
 
+        private static void HandleSetOption(string[] parts)
+        {
+            if (parts.Length < 5) return;
+
+            int nameIdx = -1, valueIdx = -1;
+            for (int i = 1; i < parts.Length; i++)
+            {
+                if (parts[i].Equals("name", StringComparison.OrdinalIgnoreCase))
+                    nameIdx = i + 1;
+                else if (parts[i].Equals("value", StringComparison.OrdinalIgnoreCase))
+                    valueIdx = i + 1;
+            }
+
+            if (nameIdx < 0 || valueIdx < 0 || nameIdx >= parts.Length || valueIdx >= parts.Length)
+                return;
+
+            string optionName = parts[nameIdx];
+            string optionValue = parts[valueIdx];
+
+            if (optionName.Equals("Hash", StringComparison.OrdinalIgnoreCase) &&
+                TryParseInt(optionValue, out int sizeMB))
+            {
+                Search.SetHashSize(Math.Max(1, Math.Min(1024, sizeMB)));
+            }
+        }
+
         private static void HandlePosition(Board board, string[] parts)
         {
-            // position startpos [moves ...]
-            // position fen <fen> [moves ...]
-
-            if (parts.Length < 2)
-                return;
+            if (parts.Length < 2) return;
 
             int idx = 1;
             if (parts[idx] == "startpos")
@@ -77,118 +96,77 @@ namespace ChessEngine
             }
             else if (parts[idx] == "fen")
             {
-                // FEN has 6 space-separated fields.
-                // We'll rebuild them from the token stream.
-                if (parts.Length < idx + 1 + 6)
-                    return;
-
+                if (parts.Length < idx + 1 + 6) return;
                 string fen = string.Join(' ', parts, idx + 1, 6);
                 Fen.Load(board, fen);
-                idx += 7; // fen + 6 fields
+                idx += 7;
             }
             else
             {
-                // Unknown position format
                 return;
             }
 
-            // Optional moves
             if (idx < parts.Length && parts[idx] == "moves")
             {
                 idx++;
                 for (; idx < parts.Length; idx++)
                 {
-                    string uciMove = parts[idx];
-                    if (!TryApplyUciMove(board, uciMove))
-                    {
-                        // If a move can't be applied, stop applying further moves.
+                    if (!TryApplyUciMove(board, parts[idx]))
                         break;
-                    }
                 }
             }
         }
 
         private static void HandleGo(Board board, string[] parts)
         {
-            // Common Arena patterns:
-            // go movetime 1000
-            // go wtime 300000 btime 300000 winc 0 binc 0
-            // (may include extra tokens like depth, nodes, etc. which we ignore)
-
-            int movetime = -1;
-            int wtime = -1, btime = -1, winc = 0, binc = 0;
+            int movetime = -1, wtime = -1, btime = -1, winc = 0, binc = 0, movestogo = 0;
 
             for (int i = 1; i < parts.Length; i++)
             {
-                string t = parts[i];
-                if (i + 1 >= parts.Length)
-                    continue;
+                if (i + 1 >= parts.Length) continue;
 
-                if (t == "movetime" && TryParseInt(parts[i + 1], out int mt))
-                {
-                    movetime = mt;
-                    i++;
-                }
-                else if (t == "wtime" && TryParseInt(parts[i + 1], out int wt))
-                {
-                    wtime = wt;
-                    i++;
-                }
-                else if (t == "btime" && TryParseInt(parts[i + 1], out int bt))
-                {
-                    btime = bt;
-                    i++;
-                }
-                else if (t == "winc" && TryParseInt(parts[i + 1], out int wi))
-                {
-                    winc = wi;
-                    i++;
-                }
-                else if (t == "binc" && TryParseInt(parts[i + 1], out int bi))
-                {
-                    binc = bi;
-                    i++;
-                }
+                string t = parts[i];
+                if (t == "movetime" && TryParseInt(parts[i + 1], out int mt)) { movetime = mt; i++; }
+                else if (t == "wtime" && TryParseInt(parts[i + 1], out int wt)) { wtime = wt; i++; }
+                else if (t == "btime" && TryParseInt(parts[i + 1], out int bt)) { btime = bt; i++; }
+                else if (t == "winc" && TryParseInt(parts[i + 1], out int wi)) { winc = wi; i++; }
+                else if (t == "binc" && TryParseInt(parts[i + 1], out int bi)) { binc = bi; i++; }
+                else if (t == "movestogo" && TryParseInt(parts[i + 1], out int mtg)) { movestogo = mtg; i++; }
             }
 
-            int timeMs = ComputeTimeBudgetMs(board.WhiteToMove, movetime, wtime, btime, winc, binc);
-            var result = Search.FindBestMove(board, timeMs, maxDepth: 64);
+            InitializeTimeManager(board, movetime, wtime, btime, winc, binc, movestogo);
+            var result = Search.FindBestMove(board, _timeManager, maxDepth: 64);
 
-            // Apply best move to internal board state (engine assumes it plays the side-to-move).
             if (!result.BestMove.Equals(default(Move)))
                 board.MakeMove(result.BestMove);
 
-            // Always return a move if we have one; GUIs may dislike 0000.
             string best = result.BestMove.Equals(default(Move)) ? "0000" : result.BestMove.ToString();
             WriteLineFlush($"bestmove {best}");
         }
 
-        private static int ComputeTimeBudgetMs(bool whiteToMove, int movetime, int wtime, int btime, int winc, int binc)
+        private static void InitializeTimeManager(Board board, int movetime, int wtime, int btime,
+                                                   int winc, int binc, int movestogo)
         {
-            // Safety margin to avoid flagging on time.
-            const int safety = 20;
-            const int hardCapMs = 2000; // keep Arena responsive by default
-
             if (movetime > 0)
-                return Math.Max(1, Math.Min(hardCapMs, movetime - safety));
+            {
+                _timeManager.InitializeFixedTime(movetime);
+                return;
+            }
 
-            int remaining = whiteToMove ? wtime : btime;
-            int inc = whiteToMove ? winc : binc;
+            int remaining = board.WhiteToMove ? wtime : btime;
+            int increment = board.WhiteToMove ? winc : binc;
 
             if (remaining <= 0)
-                return 100; // fallback
+            {
+                _timeManager.InitializeFixedTime(100);
+                return;
+            }
 
-            // Very simple allocation:
-            // use ~1/30th of remaining + a chunk of increment, capped.
-            int slice = remaining / 30;
-            int budget = slice + (inc * 8 / 10);
+            GamePhase phase = TimeManager.DetectGamePhase(board);
+            int rootMoveCount = MoveGenerator.GenerateLegalMoves(board).Count;
+            bool isInCheck = board.IsKingInCheck(board.WhiteToMove);
 
-            // Cap to a reasonable fraction of remaining time.
-            int cap = Math.Max(50, remaining / 5);
-            budget = Math.Min(budget, cap);
-            budget = Math.Min(budget, hardCapMs);
-
-            return Math.Max(1, budget - safety);
+            _timeManager.Initialize(remaining, increment, movestogo, phase, rootMoveCount, isInCheck);
         }
 
         private static void WriteLineFlush(string line)
@@ -203,20 +181,14 @@ namespace ChessEngine
                 return false;
 
             List<Move> legal = MoveGenerator.GenerateLegalMoves(board);
-            for (int i = 0; i < legal.Count; i++)
+            foreach (Move m in legal)
             {
-                Move m = legal[i];
-                if (m.From != from || m.To != to)
-                    continue;
-
-                // Promotions must match exactly.
-                if (m.Promotion != promo)
-                    continue;
-
-                board.MakeMove(m);
-                return true;
+                if (m.From == from && m.To == to && m.Promotion == promo)
+                {
+                    board.MakeMove(m);
+                    return true;
+                }
             }
-
             return false;
         }
 
@@ -226,18 +198,13 @@ namespace ChessEngine
             to = 0;
             promotion = Piece.Empty;
 
-            if (text.Length < 4)
-                return false;
-
-            if (!TryParseSquare(text.AsSpan(0, 2), out from))
-                return false;
-            if (!TryParseSquare(text.AsSpan(2, 2), out to))
-                return false;
+            if (text.Length < 4) return false;
+            if (!TryParseSquare(text.AsSpan(0, 2), out from)) return false;
+            if (!TryParseSquare(text.AsSpan(2, 2), out to)) return false;
 
             if (text.Length >= 5)
             {
-                char pc = char.ToLowerInvariant(text[4]);
-                promotion = pc switch
+                promotion = char.ToLowerInvariant(text[4]) switch
                 {
                     'q' => whiteToMove ? Piece.WQ : Piece.BQ,
                     'r' => whiteToMove ? Piece.WR : Piece.BR,
@@ -246,27 +213,21 @@ namespace ChessEngine
                     _ => Piece.Empty
                 };
             }
-
             return true;
         }
 
         private static bool TryParseSquare(ReadOnlySpan<char> sq, out int square)
         {
             square = 0;
-            if (sq.Length != 2)
-                return false;
+            if (sq.Length != 2) return false;
 
             char fileChar = sq[0];
             char rankChar = sq[1];
 
-            if (fileChar < 'a' || fileChar > 'h')
-                return false;
-            if (rankChar < '1' || rankChar > '8')
-                return false;
+            if (fileChar < 'a' || fileChar > 'h') return false;
+            if (rankChar < '1' || rankChar > '8') return false;
 
-            int file = fileChar - 'a';
-            int rank = rankChar - '1';
-            square = rank * 8 + file;
+            square = (rankChar - '1') * 8 + (fileChar - 'a');
             return true;
         }
 

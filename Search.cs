@@ -6,11 +6,21 @@ namespace ChessEngine
 {
     public static class Search
     {
-        // Large values in centipawns.
         private const int MateScore = 100000;
         private const int Infinity = 1_000_000;
+        private const int MaxPly = 128;
 
-        // If time runs out mid-search, we throw internally to unwind quickly.
+        private static readonly TranspositionTable _tt = new TranspositionTable(64);
+        private static TimeManager? _timeManager;
+        private static Stopwatch? _sw;
+        private static int _hardTimeLimit;
+
+        // Killer moves: 2 killers per ply
+        private static readonly Move[,] _killerMoves = new Move[MaxPly, 2];
+
+        // History heuristic: [piece][toSquare]
+        private static readonly int[,] _historyTable = new int[13, 64];
+
         private sealed class SearchTimeoutException : Exception { }
 
         public readonly struct SearchResult
@@ -27,17 +37,25 @@ namespace ChessEngine
             }
         }
 
-        // Entry point: iterative deepening until time budget is hit.
-        public static SearchResult FindBestMove(Board board, int timeMs, int maxDepth = 64)
+        public static void SetHashSize(int sizeMB) => _tt.Resize(sizeMB);
+        public static void ClearHash() => _tt.Clear();
+
+        private static void ClearSearchTables()
         {
-            if (timeMs <= 0)
-                throw new ArgumentOutOfRangeException(nameof(timeMs));
+            Array.Clear(_killerMoves, 0, _killerMoves.Length);
+            Array.Clear(_historyTable, 0, _historyTable.Length);
+        }
+
+        public static SearchResult FindBestMove(Board board, TimeManager timeManager, int maxDepth = 64)
+        {
             if (maxDepth <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxDepth));
 
-            var sw = Stopwatch.StartNew();
+            _timeManager = timeManager;
+            _sw = Stopwatch.StartNew();
+            _hardTimeLimit = timeManager.MaxTimeMs;
+            ClearSearchTables();
 
-            // Fallback: if search fails early, return first legal move if any.
             List<Move> rootMoves = MoveGenerator.GenerateLegalMoves(board);
             if (rootMoves.Count == 0)
                 return new SearchResult(default, 0, 0);
@@ -46,15 +64,126 @@ namespace ChessEngine
             int bestScoreOverall = 0;
             int depthReached = 0;
 
-            // Iterative deepening. Keep last fully-completed depth.
+            // Aspiration window parameters
+            int alpha = -Infinity;
+            int beta = Infinity;
+            const int AspirationDelta = 25;
+
             for (int depth = 1; depth <= maxDepth; depth++)
             {
                 try
                 {
-                    var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, sw, timeMs);
-                    bestMoveOverall = bestMoveAtDepth;
-                    bestScoreOverall = bestScoreAtDepth;
-                    depthReached = depth;
+                    int delta = AspirationDelta;
+
+                    // Use aspiration windows starting from depth 4
+                    if (depth >= 4)
+                    {
+                        alpha = bestScoreOverall - delta;
+                        beta = bestScoreOverall + delta;
+                    }
+
+                    while (true)
+                    {
+                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
+
+                        // Check for aspiration window fail
+                        if (bestScoreAtDepth <= alpha)
+                        {
+                            // Fail low - widen alpha
+                            alpha = Math.Max(-Infinity, alpha - delta);
+                            delta *= 2;
+                        }
+                        else if (bestScoreAtDepth >= beta)
+                        {
+                            // Fail high - widen beta
+                            beta = Math.Min(Infinity, beta + delta);
+                            delta *= 2;
+                        }
+                        else
+                        {
+                            // Score within window
+                            bestMoveOverall = bestMoveAtDepth;
+                            bestScoreOverall = bestScoreAtDepth;
+                            depthReached = depth;
+                            break;
+                        }
+                    }
+
+                    timeManager.OnIterationComplete(depth, bestScoreOverall);
+
+                    if (timeManager.ShouldStop(_sw.ElapsedMilliseconds))
+                        break;
+                }
+                catch (SearchTimeoutException)
+                {
+                    break;
+                }
+            }
+
+            _timeManager = null;
+            return new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
+        }
+
+        public static SearchResult FindBestMove(Board board, int timeMs, int maxDepth = 64)
+        {
+            if (timeMs <= 0)
+                throw new ArgumentOutOfRangeException(nameof(timeMs));
+            if (maxDepth <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maxDepth));
+
+            _timeManager = null;
+            _sw = Stopwatch.StartNew();
+            _hardTimeLimit = timeMs;
+            ClearSearchTables();
+
+            List<Move> rootMoves = MoveGenerator.GenerateLegalMoves(board);
+            if (rootMoves.Count == 0)
+                return new SearchResult(default, 0, 0);
+
+            Move bestMoveOverall = rootMoves[0];
+            int bestScoreOverall = 0;
+            int depthReached = 0;
+
+            // Aspiration window parameters
+            int alpha = -Infinity;
+            int beta = Infinity;
+            const int AspirationDelta = 25;
+
+            for (int depth = 1; depth <= maxDepth; depth++)
+            {
+                try
+                {
+                    int delta = AspirationDelta;
+
+                    // Use aspiration windows starting from depth 4
+                    if (depth >= 4)
+                    {
+                        alpha = bestScoreOverall - delta;
+                        beta = bestScoreOverall + delta;
+                    }
+
+                    while (true)
+                    {
+                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
+
+                        if (bestScoreAtDepth <= alpha)
+                        {
+                            alpha = Math.Max(-Infinity, alpha - delta);
+                            delta *= 2;
+                        }
+                        else if (bestScoreAtDepth >= beta)
+                        {
+                            beta = Math.Min(Infinity, beta + delta);
+                            delta *= 2;
+                        }
+                        else
+                        {
+                            bestMoveOverall = bestMoveAtDepth;
+                            bestScoreOverall = bestScoreAtDepth;
+                            depthReached = depth;
+                            break;
+                        }
+                    }
                 }
                 catch (SearchTimeoutException)
                 {
@@ -65,35 +194,45 @@ namespace ChessEngine
             return new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
         }
 
-        private static (Move bestMove, int bestScore) SearchRoot(Board board, int depth, Stopwatch sw, int timeMs)
+        private static (Move bestMove, int bestScore) SearchRoot(Board board, int depth, int alpha, int beta)
         {
-            CheckTime(sw, timeMs);
+            CheckTime();
 
             List<Move> moves = MoveGenerator.GenerateLegalMoves(board);
             if (moves.Count == 0)
             {
-                // Terminal at root.
                 bool stmInCheck = board.IsKingInCheck(board.WhiteToMove);
-                int score = stmInCheck ? -MateScore : 0;
-                return (default, score);
+                return (default, stmInCheck ? -MateScore : 0);
             }
 
-            // Order moves before searching.
-            OrderMoves(board, moves);
+            Move ttMove = _tt.GetTTMove(board.ZobristHash);
+            OrderMoves(board, moves, ttMove, 0);
 
             Move bestMove = moves[0];
             int bestScore = -Infinity;
-            int alpha = -Infinity;
-            int beta = Infinity;
+            int originalAlpha = alpha;
 
             for (int i = 0; i < moves.Count; i++)
             {
-                CheckTime(sw, timeMs);
+                CheckTime();
 
                 Move move = moves[i];
                 board.MakeMove(move);
 
-                int score = -AlphaBeta(board, depth - 1, -beta, -alpha, 1, sw, timeMs);
+                int score;
+                // PVS: search first move with full window, rest with null window
+                if (i == 0)
+                {
+                    score = -AlphaBeta(board, depth - 1, -beta, -alpha, 1, false);
+                }
+                else
+                {
+                    // Null window search
+                    score = -AlphaBeta(board, depth - 1, -alpha - 1, -alpha, 1, false);
+                    // Re-search with full window if it fails high
+                    if (score > alpha && score < beta)
+                        score = -AlphaBeta(board, depth - 1, -beta, -alpha, 1, false);
+                }
 
                 board.UndoMove(move);
 
@@ -105,61 +244,163 @@ namespace ChessEngine
 
                 if (score > alpha)
                     alpha = score;
+
+                if (score >= beta)
+                    break;
             }
 
+            TTFlag flag = bestScore <= originalAlpha ? TTFlag.Alpha :
+                          bestScore >= beta ? TTFlag.Beta : TTFlag.Exact;
+            _tt.Store(board.ZobristHash, depth, bestScore, flag, bestMove, 0);
             return (bestMove, bestScore);
         }
 
-        private static int AlphaBeta(Board board, int depth, int alpha, int beta, int ply, Stopwatch sw, int timeMs)
+        private static int AlphaBeta(Board board, int depth, int alpha, int beta, int ply, bool isNullMove)
         {
-            CheckTime(sw, timeMs);
+            CheckTime();
+
+            // Check extension: extend search when in check
+            bool inCheck = board.IsKingInCheck(board.WhiteToMove);
+            if (inCheck)
+                depth++;
 
             if (depth <= 0)
+                return Quiesce(board, alpha, beta, ply);
+
+            if (_tt.Probe(board.ZobristHash, depth, alpha, beta, ply, out int ttScore, out Move ttMove))
+                return ttScore;
+
+            // Null move pruning
+            if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board))
             {
-                return Quiesce(board, alpha, beta, ply, sw, timeMs);
+                board.MakeNullMove();
+                int nullScore = -AlphaBeta(board, depth - 3, -beta, -beta + 1, ply + 1, true);
+                board.UndoNullMove();
+
+                if (nullScore >= beta)
+                    return beta;
             }
 
             List<Move> moves = MoveGenerator.GenerateLegalMoves(board);
             if (moves.Count == 0)
             {
-                // No legal moves: mate or stalemate
-                bool stmInCheck = board.IsKingInCheck(board.WhiteToMove);
-                if (stmInCheck)
-                {
-                    // Prefer faster mates: losing side gets more negative with ply.
-                    return -MateScore + ply;
-                }
-                return 0;
+                return inCheck ? -MateScore + ply : 0;
             }
 
-            OrderMoves(board, moves);
+            OrderMoves(board, moves, ttMove, ply);
+
+            int originalAlpha = alpha;
+            Move bestMove = moves[0];
+            int movesSearched = 0;
 
             for (int i = 0; i < moves.Count; i++)
             {
-                CheckTime(sw, timeMs);
+                CheckTime();
 
                 Move move = moves[i];
+                bool isQuiet = !move.IsCapture && !move.IsPromotion;
+
                 board.MakeMove(move);
 
-                int score = -AlphaBeta(board, depth - 1, -beta, -alpha, ply + 1, sw, timeMs);
+                int score;
+                int newDepth = depth - 1;
+
+                // Late Move Reductions (LMR)
+                int reduction = 0;
+                if (depth >= 3 && movesSearched >= 4 && isQuiet && !inCheck)
+                {
+                    reduction = 1 + (depth / 4) + (movesSearched / 8);
+                    reduction = Math.Min(reduction, depth - 2);
+                }
+
+                // PVS: search first move with full window, rest with null window
+                if (movesSearched == 0)
+                {
+                    score = -AlphaBeta(board, newDepth, -beta, -alpha, ply + 1, false);
+                }
+                else
+                {
+                    // Reduced depth null window search
+                    score = -AlphaBeta(board, newDepth - reduction, -alpha - 1, -alpha, ply + 1, false);
+
+                    // Re-search at full depth if reduced search fails high
+                    if (reduction > 0 && score > alpha)
+                        score = -AlphaBeta(board, newDepth, -alpha - 1, -alpha, ply + 1, false);
+
+                    // Re-search with full window if null window fails high
+                    if (score > alpha && score < beta)
+                        score = -AlphaBeta(board, newDepth, -beta, -alpha, ply + 1, false);
+                }
 
                 board.UndoMove(move);
+                movesSearched++;
 
                 if (score >= beta)
+                {
+                    _tt.Store(board.ZobristHash, depth, beta, TTFlag.Beta, move, ply);
+
+                    // Store killer move if quiet
+                    if (isQuiet && ply < MaxPly)
+                    {
+                        // Don't store duplicate
+                        if (!MovesEqual(_killerMoves[ply, 0], move))
+                        {
+                            _killerMoves[ply, 1] = _killerMoves[ply, 0];
+                            _killerMoves[ply, 0] = move;
+                        }
+                    }
+
+                    // Update history for quiet moves
+                    if (isQuiet)
+                    {
+                        Piece piece = board.PieceAt(move.From);
+                        if (piece == Piece.Empty)
+                            piece = board.PieceAt(move.To); // piece already moved for hash
+                        _historyTable[(int)piece, move.To] += depth * depth;
+                    }
+
                     return beta;
+                }
 
                 if (score > alpha)
+                {
                     alpha = score;
+                    bestMove = move;
+
+                    // Update history for quiet moves that improve alpha
+                    if (isQuiet)
+                    {
+                        Piece piece = board.PieceAt(move.From);
+                        if (piece == Piece.Empty)
+                            piece = board.PieceAt(move.To);
+                        _historyTable[(int)piece, move.To] += depth;
+                    }
+                }
             }
 
+            TTFlag flag = alpha > originalAlpha ? TTFlag.Exact : TTFlag.Alpha;
+            _tt.Store(board.ZobristHash, depth, alpha, flag, bestMove, ply);
             return alpha;
         }
 
-        private static int Quiesce(Board board, int alpha, int beta, int ply, Stopwatch sw, int timeMs)
+        private static bool HasNonPawnMaterial(Board board)
         {
-            CheckTime(sw, timeMs);
+            if (board.WhiteToMove)
+                return (board.WN | board.WB | board.WR | board.WQ) != 0;
+            else
+                return (board.BN | board.BB | board.BR | board.BQ) != 0;
+        }
 
-            int standPat = EvaluateForSideToMove(board);
+        private static bool MovesEqual(Move a, Move b)
+        {
+            return a.From == b.From && a.To == b.To && a.Promotion == b.Promotion;
+        }
+
+        private static int Quiesce(Board board, int alpha, int beta, int ply)
+        {
+            CheckTime();
+
+            int standPat = Evaluator.Evaluate(board);
 
             if (standPat >= beta)
                 return beta;
@@ -169,14 +410,10 @@ namespace ChessEngine
             List<Move> moves = MoveGenerator.GenerateLegalMoves(board);
             if (moves.Count == 0)
             {
-                // Terminal: mate or stalemate
                 bool stmInCheck = board.IsKingInCheck(board.WhiteToMove);
-                if (stmInCheck)
-                    return -MateScore + ply;
-                return 0;
+                return stmInCheck ? -MateScore + ply : 0;
             }
 
-            // Captures only (and promotions).
             var noisyMoves = new List<Move>(moves.Count);
             for (int i = 0; i < moves.Count; i++)
             {
@@ -188,17 +425,31 @@ namespace ChessEngine
             if (noisyMoves.Count == 0)
                 return alpha;
 
-            OrderMoves(board, noisyMoves);
+            OrderMoves(board, noisyMoves, default, ply);
+
+            // Delta pruning margin
+            const int DeltaMargin = 200;
 
             for (int i = 0; i < noisyMoves.Count; i++)
             {
-                CheckTime(sw, timeMs);
+                CheckTime();
 
                 Move move = noisyMoves[i];
+
+                // Delta pruning: skip captures that can't possibly raise alpha
+                if (!move.IsPromotion)
+                {
+                    Piece victim = move.IsEnPassant
+                        ? (board.WhiteToMove ? Piece.BP : Piece.WP)
+                        : board.PieceAt(move.To);
+
+                    int captureValue = Evaluator.GetPieceValue(victim);
+                    if (standPat + captureValue + DeltaMargin < alpha)
+                        continue;
+                }
+
                 board.MakeMove(move);
-
-                int score = -Quiesce(board, -beta, -alpha, ply + 1, sw, timeMs);
-
+                int score = -Quiesce(board, -beta, -alpha, ply + 1);
                 board.UndoMove(move);
 
                 if (score >= beta)
@@ -210,54 +461,70 @@ namespace ChessEngine
             return alpha;
         }
 
-        private static int EvaluateForSideToMove(Board board)
+        private static void CheckTime()
         {
-            // Evaluator.Evaluate already returns score from side-to-move perspective.
-            return Evaluator.Evaluate(board);
+            if (_sw == null)
+                return;
+
+            long elapsed = _sw.ElapsedMilliseconds;
+            if (_timeManager != null)
+            {
+                if (_timeManager.MustStop(elapsed))
+                    throw new SearchTimeoutException();
+            }
+            else
+            {
+                if (elapsed >= _hardTimeLimit)
+                    throw new SearchTimeoutException();
+            }
         }
 
-        private static void CheckTime(Stopwatch sw, int timeMs)
+        private static void OrderMoves(Board board, List<Move> moves, Move ttMove, int ply)
         {
-            if (sw.ElapsedMilliseconds >= timeMs)
-                throw new SearchTimeoutException();
+            moves.Sort((a, b) => ScoreMove(board, b, ttMove, ply).CompareTo(ScoreMove(board, a, ttMove, ply)));
         }
 
-        private static void OrderMoves(Board board, List<Move> moves)
+        private static int ScoreMove(Board board, Move move, Move ttMove, int ply)
         {
-            moves.Sort((a, b) => ScoreMove(board, b).CompareTo(ScoreMove(board, a)));
-        }
+            // TT move gets highest priority
+            if (MovesEqual(move, ttMove))
+                return 10_000_000;
 
-        private static int ScoreMove(Board board, Move move)
-        {
-            // Higher is better. Simple ordering:
-            // Promotions > captures (MVV-LVA-ish) > quiet.
             int score = 0;
 
+            // Promotions
             if (move.IsPromotion)
                 score += 1_000_000 + Evaluator.GetPieceValue(move.Promotion);
 
+            // Captures - MVV-LVA
             if (move.IsCapture)
             {
                 Piece attacker = board.PieceAt(move.From);
-                Piece victim;
-
-                if (move.IsEnPassant)
-                {
-                    victim = board.WhiteToMove ? Piece.BP : Piece.WP;
-                }
-                else
-                {
-                    victim = board.PieceAt(move.To);
-                }
+                Piece victim = move.IsEnPassant
+                    ? (board.WhiteToMove ? Piece.BP : Piece.WP)
+                    : board.PieceAt(move.To);
 
                 int victimValue = Evaluator.GetPieceValue(victim);
                 int attackerValue = Evaluator.GetPieceValue(attacker);
-
-                // Prioritize winning captures.
                 score += 500_000 + (victimValue * 10) - attackerValue;
             }
+            else
+            {
+                // Killer moves (only for quiet moves)
+                if (ply < MaxPly)
+                {
+                    if (MovesEqual(move, _killerMoves[ply, 0]))
+                        return 400_000;
+                    if (MovesEqual(move, _killerMoves[ply, 1]))
+                        return 300_000;
+                }
 
-            // Small bias for castling (helps choose it a bit earlier).
+                // History heuristic for quiet moves
+                Piece piece = board.PieceAt(move.From);
+                if (piece != Piece.Empty)
+                    score += _historyTable[(int)piece, move.To];
+            }
+
             if (move.IsCastling)
                 score += 50;
 

@@ -11,27 +11,6 @@ namespace ChessEngine
         BP, BN, BB, BR, BQ, BK
     }
 
-    public static class PieceExtensions
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool IsWhite(this Piece p)
-        {
-            return p >= Piece.WP && p <= Piece.WK;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool IsBlack(this Piece p)
-        {
-            return p >= Piece.BP && p <= Piece.BK;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool IsEmpty(this Piece p)
-        {
-            return p == Piece.Empty;
-        }
-    }
-    
     [Flags]
     public enum CastlingRights
     {
@@ -42,33 +21,79 @@ namespace ChessEngine
         BlackQueenSide = 8,
     }
 
+    /// <summary>
+    /// Zobrist hashing keys for unique position identification.
+    /// </summary>
+    public static class Zobrist
+    {
+        public static readonly ulong[,] PieceKeys = new ulong[13, 64];
+        public static readonly ulong[] CastlingKeys = new ulong[16];
+        public static readonly ulong[] EnPassantKeys = new ulong[8];
+        public static readonly ulong SideToMoveKey;
+
+        static Zobrist()
+        {
+            var rng = new Random(1234);
+
+            for (int piece = 1; piece <= 12; piece++)
+                for (int sq = 0; sq < 64; sq++)
+                    PieceKeys[piece, sq] = NextUInt64(rng);
+
+            for (int i = 0; i < 16; i++)
+                CastlingKeys[i] = NextUInt64(rng);
+
+            for (int file = 0; file < 8; file++)
+                EnPassantKeys[file] = NextUInt64(rng);
+
+            SideToMoveKey = NextUInt64(rng);
+        }
+
+        private static ulong NextUInt64(Random rng)
+        {
+            byte[] buffer = new byte[8];
+            rng.NextBytes(buffer);
+            return BitConverter.ToUInt64(buffer, 0);
+        }
+    }
+
+    public static class PieceExtensions
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool IsWhite(this Piece p) => p >= Piece.WP && p <= Piece.WK;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool IsBlack(this Piece p) => p >= Piece.BP && p <= Piece.BK;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool IsEmpty(this Piece p) => p == Piece.Empty;
+    }
+
     public struct UndoInfo
     {
         public Piece CapturedPiece;
         public int EnPassantSquare;
         public CastlingRights CastlingRights;
         public int HalfMoveClock;
+        public ulong ZobristHash;
     }
 
     public class Board
     {
-        // Piece bitboards
         public ulong WP, WN, WB, WR, WQ, WK;
         public ulong BP, BN, BB, BR, BQ, BK;
 
-        // Occupancy bitboards
         public ulong WhitePieces;
         public ulong BlackPieces;
         public ulong AllPieces;
 
-        // Game state
         public bool WhiteToMove { get; private set; }
-        public int EnPassantSquare { get; private set; } // -1 if none
+        public int EnPassantSquare { get; private set; }
         public CastlingRights Castling { get; private set; }
         public int HalfMoveClock { get; private set; }
         public int FullMoveNumber { get; private set; }
+        public ulong ZobristHash { get; private set; }
 
-        private Stack<UndoInfo> history = new Stack<UndoInfo>();
+        private readonly Stack<UndoInfo> _history = new Stack<UndoInfo>();
 
         public Board()
         {
@@ -77,43 +102,36 @@ namespace ChessEngine
 
         public void Reset()
         {
-            // Clear all bitboards
             WP = WN = WB = WR = WQ = WK = 0;
             BP = BN = BB = BR = BQ = BK = 0;
 
-            // White pieces
             WR = Bitboard.SquareBB[0] | Bitboard.SquareBB[7];
             WN = Bitboard.SquareBB[1] | Bitboard.SquareBB[6];
             WB = Bitboard.SquareBB[2] | Bitboard.SquareBB[5];
             WQ = Bitboard.SquareBB[3];
             WK = Bitboard.SquareBB[4];
-            WP = Bitboard.Rank2; // Pawns on rank 2
+            WP = Bitboard.Rank2;
 
-            // Black pieces
             BR = Bitboard.SquareBB[56] | Bitboard.SquareBB[63];
             BN = Bitboard.SquareBB[57] | Bitboard.SquareBB[62];
             BB = Bitboard.SquareBB[58] | Bitboard.SquareBB[61];
             BQ = Bitboard.SquareBB[59];
             BK = Bitboard.SquareBB[60];
-            BP = Bitboard.Rank7; // Pawns on rank 7
+            BP = Bitboard.Rank7;
 
             UpdateOccupancy();
 
             WhiteToMove = true;
             EnPassantSquare = -1;
-            Castling = CastlingRights.WhiteKingSide |
-                       CastlingRights.WhiteQueenSide |
-                       CastlingRights.BlackKingSide |
-                       CastlingRights.BlackQueenSide;
+            Castling = CastlingRights.WhiteKingSide | CastlingRights.WhiteQueenSide |
+                       CastlingRights.BlackKingSide | CastlingRights.BlackQueenSide;
             HalfMoveClock = 0;
             FullMoveNumber = 1;
 
-            history.Clear();
+            _history.Clear();
+            ComputeHash();
         }
 
-        /// <summary>
-        /// Update occupancy bitboards from piece bitboards.
-        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void UpdateOccupancy()
         {
@@ -122,9 +140,28 @@ namespace ChessEngine
             AllPieces = WhitePieces | BlackPieces;
         }
 
-        /// <summary>
-        /// Get the piece at a given square.
-        /// </summary>
+        public void ComputeHash()
+        {
+            ulong hash = 0;
+
+            for (int sq = 0; sq < 64; sq++)
+            {
+                Piece p = PieceAt(sq);
+                if (p != Piece.Empty)
+                    hash ^= Zobrist.PieceKeys[(int)p, sq];
+            }
+
+            hash ^= Zobrist.CastlingKeys[(int)Castling];
+
+            if (EnPassantSquare >= 0)
+                hash ^= Zobrist.EnPassantKeys[EnPassantSquare % 8];
+
+            if (!WhiteToMove)
+                hash ^= Zobrist.SideToMoveKey;
+
+            ZobristHash = hash;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Piece PieceAt(int sq)
         {
@@ -149,17 +186,12 @@ namespace ChessEngine
             return Piece.Empty;
         }
 
-        /// <summary>
-        /// Set a piece at a given square (updates relevant bitboard).
-        /// </summary>
         public void SetPiece(int sq, Piece p)
         {
-            ClearPiece(sq); // Remove any existing piece first
-
+            ClearPiece(sq);
             if (p == Piece.Empty) return;
 
             ulong mask = 1UL << sq;
-
             switch (p)
             {
                 case Piece.WP: WP |= mask; break;
@@ -175,13 +207,9 @@ namespace ChessEngine
                 case Piece.BQ: BQ |= mask; break;
                 case Piece.BK: BK |= mask; break;
             }
-
             UpdateOccupancy();
         }
 
-        /// <summary>
-        /// Clear any piece from a given square.
-        /// </summary>
         public void ClearPiece(int sq)
         {
             ulong mask = ~(1UL << sq);
@@ -194,14 +222,10 @@ namespace ChessEngine
             UpdateOccupancy();
         }
 
-        /// <summary>
-        /// Move a piece from one square to another (internal helper).
-        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void MovePiece(int from, int to, Piece p)
         {
             ulong fromTo = (1UL << from) | (1UL << to);
-
             switch (p)
             {
                 case Piece.WP: WP ^= fromTo; break;
@@ -219,14 +243,10 @@ namespace ChessEngine
             }
         }
 
-        /// <summary>
-        /// Remove a piece from a square (internal helper for captures).
-        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RemovePiece(int sq, Piece p)
         {
             ulong mask = ~(1UL << sq);
-
             switch (p)
             {
                 case Piece.WP: WP &= mask; break;
@@ -244,14 +264,10 @@ namespace ChessEngine
             }
         }
 
-        /// <summary>
-        /// Add a piece to a square (internal helper).
-        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void AddPiece(int sq, Piece p)
         {
             ulong mask = 1UL << sq;
-
             switch (p)
             {
                 case Piece.WP: WP |= mask; break;
@@ -269,23 +285,17 @@ namespace ChessEngine
             }
         }
 
-        public void LoadPosition(
-            bool whiteToMove,
-            CastlingRights castling,
-            int enPassantSquare,
-            int halfMoveClock,
-            int fullMoveNumber)
+        public void LoadPosition(bool whiteToMove, CastlingRights castling, int enPassantSquare,
+                                 int halfMoveClock, int fullMoveNumber)
         {
-            // Piece bitboards should already be set via SetPiece calls
             UpdateOccupancy();
-
             WhiteToMove = whiteToMove;
             Castling = castling;
             EnPassantSquare = enPassantSquare;
             HalfMoveClock = halfMoveClock;
             FullMoveNumber = fullMoveNumber;
-
-            history.Clear();
+            _history.Clear();
+            ComputeHash();
         }
         
         public void MakeMove(Move move)
@@ -294,76 +304,79 @@ namespace ChessEngine
             int to = move.To;
             Piece piece = PieceAt(from);
 
-            // Determine captured piece
             Piece capturedPiece = PieceAt(to);
             if ((move.Flags & MoveFlags.EnPassant) != 0)
             {
-                // For en passant, captured pawn is one rank behind the destination
                 int capSq = piece == Piece.WP ? to - 8 : to + 8;
                 capturedPiece = PieceAt(capSq);
             }
 
-            UndoInfo undo = new UndoInfo
+            _history.Push(new UndoInfo
             {
                 CapturedPiece = capturedPiece,
                 EnPassantSquare = EnPassantSquare,
                 CastlingRights = Castling,
-                HalfMoveClock = HalfMoveClock
-            };
+                HalfMoveClock = HalfMoveClock,
+                ZobristHash = ZobristHash
+            });
 
-            history.Push(undo);
+            ulong hash = ZobristHash;
+            hash ^= Zobrist.CastlingKeys[(int)Castling];
 
-            // Reset EP
+            if (EnPassantSquare >= 0)
+                hash ^= Zobrist.EnPassantKeys[EnPassantSquare % 8];
+
             EnPassantSquare = -1;
 
-            // Halfmove clock
             if (piece == Piece.WP || piece == Piece.BP || capturedPiece != Piece.Empty)
                 HalfMoveClock = 0;
             else
                 HalfMoveClock++;
 
-            // Handle capture (remove captured piece)
             if (capturedPiece != Piece.Empty && (move.Flags & MoveFlags.EnPassant) == 0)
             {
                 RemovePiece(to, capturedPiece);
+                hash ^= Zobrist.PieceKeys[(int)capturedPiece, to];
             }
 
-            // Move piece
             MovePiece(from, to, piece);
+            hash ^= Zobrist.PieceKeys[(int)piece, from];
+            hash ^= Zobrist.PieceKeys[(int)piece, to];
 
-            // Promotion - remove pawn, add promoted piece
             if (move.Promotion != Piece.Empty)
             {
                 RemovePiece(to, piece);
                 AddPiece(to, move.Promotion);
+                hash ^= Zobrist.PieceKeys[(int)piece, to];
+                hash ^= Zobrist.PieceKeys[(int)move.Promotion, to];
             }
 
-            // En passant capture
             if ((move.Flags & MoveFlags.EnPassant) != 0)
             {
                 int capSq = piece == Piece.WP ? to - 8 : to + 8;
-                RemovePiece(capSq, capturedPiece);
+                Piece enemyPawn = piece == Piece.WP ? Piece.BP : Piece.WP;
+                if (capturedPiece == enemyPawn)
+                {
+                    RemovePiece(capSq, capturedPiece);
+                    hash ^= Zobrist.PieceKeys[(int)capturedPiece, capSq];
+                }
             }
 
-            // Set en passant square
             if (piece == Piece.WP && to - from == 16)
                 EnPassantSquare = from + 8;
             else if (piece == Piece.BP && from - to == 16)
                 EnPassantSquare = from - 8;
 
-            // Remove castling rights: king move
             if (piece == Piece.WK)
                 Castling &= ~(CastlingRights.WhiteKingSide | CastlingRights.WhiteQueenSide);
             else if (piece == Piece.BK)
                 Castling &= ~(CastlingRights.BlackKingSide | CastlingRights.BlackQueenSide);
 
-            // Remove castling rights: rook move
             if (from == 0) Castling &= ~CastlingRights.WhiteQueenSide;
             else if (from == 7) Castling &= ~CastlingRights.WhiteKingSide;
             else if (from == 56) Castling &= ~CastlingRights.BlackQueenSide;
             else if (from == 63) Castling &= ~CastlingRights.BlackKingSide;
 
-            // Remove castling rights: rook captured
             if (capturedPiece == Piece.WR)
             {
                 if (to == 0) Castling &= ~CastlingRights.WhiteQueenSide;
@@ -375,22 +388,48 @@ namespace ChessEngine
                 else if (to == 63) Castling &= ~CastlingRights.BlackKingSide;
             }
 
-            // Castling rook move
             if ((move.Flags & MoveFlags.Castling) != 0)
             {
                 if (piece == Piece.WK)
                 {
-                    if (to == 6) { MovePiece(7, 5, Piece.WR); }      // Kingside
-                    else if (to == 2) { MovePiece(0, 3, Piece.WR); } // Queenside
+                    if (to == 6)
+                    {
+                        MovePiece(7, 5, Piece.WR);
+                        hash ^= Zobrist.PieceKeys[(int)Piece.WR, 7];
+                        hash ^= Zobrist.PieceKeys[(int)Piece.WR, 5];
+                    }
+                    else if (to == 2)
+                    {
+                        MovePiece(0, 3, Piece.WR);
+                        hash ^= Zobrist.PieceKeys[(int)Piece.WR, 0];
+                        hash ^= Zobrist.PieceKeys[(int)Piece.WR, 3];
+                    }
                 }
                 else if (piece == Piece.BK)
                 {
-                    if (to == 62) { MovePiece(63, 61, Piece.BR); }     // Kingside
-                    else if (to == 58) { MovePiece(56, 59, Piece.BR); } // Queenside
+                    if (to == 62)
+                    {
+                        MovePiece(63, 61, Piece.BR);
+                        hash ^= Zobrist.PieceKeys[(int)Piece.BR, 63];
+                        hash ^= Zobrist.PieceKeys[(int)Piece.BR, 61];
+                    }
+                    else if (to == 58)
+                    {
+                        MovePiece(56, 59, Piece.BR);
+                        hash ^= Zobrist.PieceKeys[(int)Piece.BR, 56];
+                        hash ^= Zobrist.PieceKeys[(int)Piece.BR, 59];
+                    }
                 }
             }
 
             UpdateOccupancy();
+
+            hash ^= Zobrist.CastlingKeys[(int)Castling];
+            if (EnPassantSquare >= 0)
+                hash ^= Zobrist.EnPassantKeys[EnPassantSquare % 8];
+
+            hash ^= Zobrist.SideToMoveKey;
+            ZobristHash = hash;
 
             WhiteToMove = !WhiteToMove;
             if (WhiteToMove)
@@ -399,7 +438,7 @@ namespace ChessEngine
 
         public void UndoMove(Move move)
         {
-            UndoInfo undo = history.Pop();
+            UndoInfo undo = _history.Pop();
 
             WhiteToMove = !WhiteToMove;
             if (!WhiteToMove)
@@ -407,25 +446,22 @@ namespace ChessEngine
 
             int from = move.From;
             int to = move.To;
-
             Piece movedPiece = PieceAt(to);
 
-            // Undo castling rook move
             if ((move.Flags & MoveFlags.Castling) != 0)
             {
                 if (movedPiece == Piece.WK)
                 {
-                    if (to == 6) { MovePiece(5, 7, Piece.WR); }      // Kingside
-                    else if (to == 2) { MovePiece(3, 0, Piece.WR); } // Queenside
+                    if (to == 6) MovePiece(5, 7, Piece.WR);
+                    else if (to == 2) MovePiece(3, 0, Piece.WR);
                 }
                 else if (movedPiece == Piece.BK)
                 {
-                    if (to == 62) { MovePiece(61, 63, Piece.BR); }     // Kingside
-                    else if (to == 58) { MovePiece(59, 56, Piece.BR); } // Queenside
+                    if (to == 62) MovePiece(61, 63, Piece.BR);
+                    else if (to == 58) MovePiece(59, 56, Piece.BR);
                 }
             }
 
-            // Undo promotion
             if (move.Promotion != Piece.Empty)
             {
                 RemovePiece(to, movedPiece);
@@ -433,10 +469,8 @@ namespace ChessEngine
                 AddPiece(to, movedPiece);
             }
 
-            // Move piece back
             MovePiece(to, from, movedPiece);
 
-            // Restore captured piece
             if (undo.CapturedPiece != Piece.Empty)
             {
                 if ((move.Flags & MoveFlags.EnPassant) != 0)
@@ -455,50 +489,68 @@ namespace ChessEngine
             EnPassantSquare = undo.EnPassantSquare;
             Castling = undo.CastlingRights;
             HalfMoveClock = undo.HalfMoveClock;
+            ZobristHash = undo.ZobristHash;
         }
 
-        public Piece GetPiece(int square)
-        {
-            return PieceAt(square);
-        }
+        public bool HasCastlingRight(CastlingRights right) => (Castling & right) != 0;
 
-        public static bool IsWhite(Piece p)
+        /// <summary>
+        /// Makes a null move (pass turn to opponent without moving).
+        /// Used for null move pruning in search.
+        /// </summary>
+        public void MakeNullMove()
         {
-            return p >= Piece.WP && p <= Piece.WK;
-        }
+            _history.Push(new UndoInfo
+            {
+                CapturedPiece = Piece.Empty,
+                EnPassantSquare = EnPassantSquare,
+                CastlingRights = Castling,
+                HalfMoveClock = HalfMoveClock,
+                ZobristHash = ZobristHash
+            });
 
-        public static bool IsBlack(Piece p)
-        {
-            return p >= Piece.BP && p <= Piece.BK;
-        }
+            ulong hash = ZobristHash;
 
-        public bool HasCastlingRight(CastlingRights right)
-        {
-            return (Castling & right) != 0;
+            // Clear en passant
+            if (EnPassantSquare >= 0)
+                hash ^= Zobrist.EnPassantKeys[EnPassantSquare % 8];
+            EnPassantSquare = -1;
+
+            // Switch side to move
+            hash ^= Zobrist.SideToMoveKey;
+            ZobristHash = hash;
+            WhiteToMove = !WhiteToMove;
         }
 
         /// <summary>
-        /// Get bitboard of all attackers to a given square.
+        /// Undoes a null move.
         /// </summary>
+        public void UndoNullMove()
+        {
+            UndoInfo undo = _history.Pop();
+            WhiteToMove = !WhiteToMove;
+            EnPassantSquare = undo.EnPassantSquare;
+            ZobristHash = undo.ZobristHash;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ulong AttackersTo(int sq, ulong occupied)
         {
-            return (Bitboard.PawnAttacks[1][sq] & WP)    // White pawn attacks (looking from black's perspective)
-                 | (Bitboard.PawnAttacks[0][sq] & BP)    // Black pawn attacks (looking from white's perspective)
+            return (Bitboard.PawnAttacks[1][sq] & WP)
+                 | (Bitboard.PawnAttacks[0][sq] & BP)
                  | (Bitboard.KnightAttacks[sq] & (WN | BN))
                  | (MagicBitboards.GetRookAttacks(sq, occupied) & (WR | BR | WQ | BQ))
                  | (MagicBitboards.GetBishopAttacks(sq, occupied) & (WB | BB | WQ | BQ))
                  | (Bitboard.KingAttacks[sq] & (WK | BK));
         }
 
-        /// <summary>
-        /// Check if a square is attacked by a given side.
-        /// </summary>
         public bool IsSquareAttacked(int square, bool byWhite)
         {
+            if (square < 0 || square > 63)
+                return false;
+
             if (byWhite)
             {
-                // Check if white attacks this square
                 if ((Bitboard.PawnAttacks[1][square] & WP) != 0) return true;
                 if ((Bitboard.KnightAttacks[square] & WN) != 0) return true;
                 if ((Bitboard.KingAttacks[square] & WK) != 0) return true;
@@ -507,7 +559,6 @@ namespace ChessEngine
             }
             else
             {
-                // Check if black attacks this square
                 if ((Bitboard.PawnAttacks[0][square] & BP) != 0) return true;
                 if ((Bitboard.KnightAttacks[square] & BN) != 0) return true;
                 if ((Bitboard.KingAttacks[square] & BK) != 0) return true;
@@ -518,23 +569,16 @@ namespace ChessEngine
             return false;
         }
 
-        /// <summary>
-        /// Check if the king of a given color is in check.
-        /// </summary>
         public bool IsKingInCheck(bool white)
         {
             ulong kingBB = white ? WK : BK;
+            if (kingBB == 0)
+                return false;
             int kingSquare = Bitboard.BitScanForward(kingBB);
             return IsSquareAttacked(kingSquare, !white);
         }
 
-        /// <summary>
-        /// Get the king square for a given color.
-        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int KingSquare(bool white)
-        {
-            return Bitboard.BitScanForward(white ? WK : BK);
-        }
+        public int KingSquare(bool white) => Bitboard.BitScanForward(white ? WK : BK);
     }
 }

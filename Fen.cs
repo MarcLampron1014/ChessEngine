@@ -6,10 +6,6 @@ namespace ChessEngine
     {
         public const string StartPosition = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-        /// <summary>
-        /// Load a FEN string into a board.
-        /// Supports: pieces, side-to-move, castling, en-passant, halfmove, fullmove
-        /// </summary>
         public static void Load(Board board, string fen)
         {
             if (board == null) throw new ArgumentNullException(nameof(board));
@@ -19,18 +15,14 @@ namespace ChessEngine
             if (parts.Length < 4)
                 throw new ArgumentException("Invalid FEN (not enough fields)", nameof(fen));
 
-            // Clear all piece bitboards first
             board.WP = board.WN = board.WB = board.WR = board.WQ = board.WK = 0;
             board.BP = board.BN = board.BB = board.BR = board.BQ = board.BK = 0;
 
-            // Field 1: piece placement (ranks 8 to 1)
             string placement = parts[0];
-            int rank = 7;
-            int file = 0;
+            int rank = 7, file = 0;
 
-            for (int i = 0; i < placement.Length; i++)
+            foreach (char c in placement)
             {
-                char c = placement[i];
                 if (c == '/')
                 {
                     rank--;
@@ -40,98 +32,65 @@ namespace ChessEngine
 
                 if (char.IsDigit(c))
                 {
-                    file += (c - '0');
+                    file += c - '0';
                     continue;
                 }
 
                 Piece p = CharToPiece(c);
                 if (p == Piece.Empty)
                     throw new ArgumentException($"Invalid piece char '{c}' in FEN", nameof(fen));
-
                 if (file < 0 || file > 7 || rank < 0 || rank > 7)
                     throw new ArgumentException("Invalid FEN board coordinates", nameof(fen));
 
-                int square = rank * 8 + file;
-                SetPieceDirect(board, square, p);
+                SetPieceDirect(board, rank * 8 + file, p);
                 file++;
             }
 
-            // Field 2: active color
             bool whiteToMove = parts[1] == "w";
 
-            // Field 3: castling
             CastlingRights castling = CastlingRights.None;
-            string castlingStr = parts[2];
-            if (castlingStr != "-")
+            if (parts[2] != "-")
             {
-                if (castlingStr.Contains('K')) castling |= CastlingRights.WhiteKingSide;
-                if (castlingStr.Contains('Q')) castling |= CastlingRights.WhiteQueenSide;
-                if (castlingStr.Contains('k')) castling |= CastlingRights.BlackKingSide;
-                if (castlingStr.Contains('q')) castling |= CastlingRights.BlackQueenSide;
+                if (parts[2].Contains('K')) castling |= CastlingRights.WhiteKingSide;
+                if (parts[2].Contains('Q')) castling |= CastlingRights.WhiteQueenSide;
+                if (parts[2].Contains('k')) castling |= CastlingRights.BlackKingSide;
+                if (parts[2].Contains('q')) castling |= CastlingRights.BlackQueenSide;
             }
 
-            // Field 4: en-passant
-            int ep = -1;
-            string epStr = parts[3];
-            if (epStr != "-" && epStr.Length == 2)
-            {
-                ep = SquareStringToIndex(epStr);
-            }
+            int ep = parts[3] != "-" && parts[3].Length == 2 ? SquareStringToIndex(parts[3]) : -1;
 
-            int halfmove = 0;
-            int fullmove = 1;
-
-            if (parts.Length >= 5)
-                int.TryParse(parts[4], out halfmove);
-            if (parts.Length >= 6)
-                int.TryParse(parts[5], out fullmove);
+            int.TryParse(parts.Length >= 5 ? parts[4] : "0", out int halfmove);
+            int.TryParse(parts.Length >= 6 ? parts[5] : "1", out int fullmove);
 
             board.LoadPosition(whiteToMove, castling, ep, halfmove, fullmove);
         }
 
-        /// <summary>
-        /// Generate a FEN string from the current board state.
-        /// </summary>
         public static string Generate(Board board)
         {
             var sb = new System.Text.StringBuilder();
 
-            // Field 1: piece placement
             for (int rank = 7; rank >= 0; rank--)
             {
                 int emptyCount = 0;
                 for (int file = 0; file < 8; file++)
                 {
-                    int square = rank * 8 + file;
-                    Piece p = board.PieceAt(square);
-
+                    Piece p = board.PieceAt(rank * 8 + file);
                     if (p == Piece.Empty)
                     {
                         emptyCount++;
                     }
                     else
                     {
-                        if (emptyCount > 0)
-                        {
-                            sb.Append(emptyCount);
-                            emptyCount = 0;
-                        }
+                        if (emptyCount > 0) { sb.Append(emptyCount); emptyCount = 0; }
                         sb.Append(PieceToChar(p));
                     }
                 }
-
-                if (emptyCount > 0)
-                    sb.Append(emptyCount);
-
-                if (rank > 0)
-                    sb.Append('/');
+                if (emptyCount > 0) sb.Append(emptyCount);
+                if (rank > 0) sb.Append('/');
             }
 
-            // Field 2: active color
-            sb.Append(' ');
-            sb.Append(board.WhiteToMove ? 'w' : 'b');
+            sb.Append(' ').Append(board.WhiteToMove ? 'w' : 'b');
 
-            // Field 3: castling
             sb.Append(' ');
             if (board.Castling == CastlingRights.None)
             {
@@ -145,31 +104,13 @@ namespace ChessEngine
                 if ((board.Castling & CastlingRights.BlackQueenSide) != 0) sb.Append('q');
             }
 
-            // Field 4: en-passant
-            sb.Append(' ');
-            if (board.EnPassantSquare == -1)
-            {
-                sb.Append('-');
-            }
-            else
-            {
-                sb.Append(IndexToSquareString(board.EnPassantSquare));
-            }
-
-            // Field 5: halfmove clock
-            sb.Append(' ');
-            sb.Append(board.HalfMoveClock);
-
-            // Field 6: fullmove number
-            sb.Append(' ');
-            sb.Append(board.FullMoveNumber);
+            sb.Append(' ').Append(board.EnPassantSquare == -1 ? "-" : IndexToSquareString(board.EnPassantSquare));
+            sb.Append(' ').Append(board.HalfMoveClock);
+            sb.Append(' ').Append(board.FullMoveNumber);
 
             return sb.ToString();
         }
 
-        /// <summary>
-        /// Set a piece directly on the board's bitboards (used during FEN loading).
-        /// </summary>
         private static void SetPieceDirect(Board board, int sq, Piece p)
         {
             ulong mask = 1UL << sq;
