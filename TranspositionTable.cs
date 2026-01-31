@@ -155,5 +155,27 @@ namespace ChessEngine
             flag = entry.Flag;
             return true;
         }
+
+        /// <summary>
+        /// Returns the hash table usage in permille (0-1000).
+        /// Samples a portion of the table for performance.
+        /// </summary>
+        public int Hashfull()
+        {
+            if (_entries == 0)
+                return 0;
+
+            // Sample first 1000 entries or all entries if table is smaller
+            int sampleSize = Math.Min(1000, _entries);
+            int used = 0;
+
+            for (int i = 0; i < sampleSize; i++)
+            {
+                if (_table[i].Flag != TTFlag.None)
+                    used++;
+            }
+
+            return used * 1000 / sampleSize;
+        }
     }
 }

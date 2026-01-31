@@ -24,8 +24,8 @@ namespace ChessEngine
         // Countermove heuristic: [piece][toSquare] -> move that refutes it
         private static readonly Move[,] _counterMoves = new Move[13, 64];
 
-        // Node counter for time check optimization
-        private static int _nodeCount;
+        // Node counter for time check optimization and UCI info
+        private static long _nodeCount;
 
         // Previous move tracking for countermove heuristic
         private static Move _previousMove;
@@ -437,6 +437,9 @@ namespace ChessEngine
                         }
                     }
 
+                    // Output UCI info after each completed iteration
+                    SendUciInfo(depth, bestScoreOverall, bestMoveOverall, _nodeCount, _sw.ElapsedMilliseconds);
+
                     timeManager.OnIterationComplete(depth, bestScoreOverall);
 
                     if (timeManager.ShouldStop(_sw.ElapsedMilliseconds))
@@ -512,6 +515,9 @@ namespace ChessEngine
                             break;
                         }
                     }
+
+                    // Output UCI info after each completed iteration
+                    SendUciInfo(depth, bestScoreOverall, bestMoveOverall, _nodeCount, _sw.ElapsedMilliseconds);
                 }
                 catch (SearchTimeoutException)
                 {
@@ -1037,8 +1043,10 @@ namespace ChessEngine
 
         private static void CheckTime()
         {
+            _nodeCount++;
+
             // Only check time every 2048 nodes to reduce overhead
-            if ((++_nodeCount & 2047) != 0)
+            if ((_nodeCount & 2047) != 0)
                 return;
 
             if (_sw == null)
@@ -1055,6 +1063,38 @@ namespace ChessEngine
                 if (elapsed >= _hardTimeLimit)
                     throw new SearchTimeoutException();
             }
+        }
+
+        /// <summary>
+        /// Outputs UCI info string with search statistics.
+        /// </summary>
+        private static void SendUciInfo(int depth, int score, Move bestMove, long nodes, long elapsedMs)
+        {
+            long nps = elapsedMs > 0 ? (nodes * 1000) / elapsedMs : nodes;
+            int hashfull = _tt.Hashfull();
+
+            // Format score - detect mate scores
+            string scoreStr;
+            if (score > MateScore - 1000)
+            {
+                int mateIn = (MateScore - score + 1) / 2;
+                scoreStr = $"mate {mateIn}";
+            }
+            else if (score < -MateScore + 1000)
+            {
+                int mateIn = -(MateScore + score + 1) / 2;
+                scoreStr = $"mate {mateIn}";
+            }
+            else
+            {
+                scoreStr = $"cp {score}";
+            }
+
+            string moveStr = bestMove.From != bestMove.To ? bestMove.ToString() : "0000";
+            string info = $"info depth {depth} score {scoreStr} nodes {nodes} nps {nps} hashfull {hashfull} time {elapsedMs} pv {moveStr}";
+            
+            Console.WriteLine(info);
+            Console.Out.Flush();
         }
 
         private static void OrderMoves(Board board, Move[] moves, int moveCount, Move ttMove, int ply)
