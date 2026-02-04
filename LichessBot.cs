@@ -231,10 +231,11 @@ namespace ChessEngine
                         using var doc = JsonDocument.Parse(line);
                         var root = doc.RootElement;
 
+                        bool lineHadPositionUpdate = false;
                         if (root.TryGetProperty("state", out var state))
                         {
-                            if (state.TryGetProperty("moves", out var m)) moves = m.GetString() ?? "";
-                            if (state.TryGetProperty("fen", out var f)) positionFen = f.GetString();
+                            if (state.TryGetProperty("moves", out var m)) { moves = m.GetString() ?? ""; lineHadPositionUpdate = true; }
+                            if (state.TryGetProperty("fen", out var f)) { positionFen = f.GetString(); lineHadPositionUpdate = true; }
                             if (state.TryGetProperty("wtime", out var wt)) wtime = wt.GetInt32();
                             if (state.TryGetProperty("btime", out var bt)) btime = bt.GetInt32();
                             if (state.TryGetProperty("winc", out var wi)) winc = wi.GetInt32();
@@ -242,8 +243,8 @@ namespace ChessEngine
                         }
                         else
                         {
-                            if (root.TryGetProperty("moves", out var m)) moves = m.GetString() ?? "";
-                            if (root.TryGetProperty("fen", out var f)) positionFen = f.GetString();
+                            if (root.TryGetProperty("moves", out var m)) { moves = m.GetString() ?? ""; lineHadPositionUpdate = true; }
+                            if (root.TryGetProperty("fen", out var f)) { positionFen = f.GetString(); lineHadPositionUpdate = true; }
                             if (root.TryGetProperty("wtime", out var wt)) wtime = wt.GetInt32();
                             if (root.TryGetProperty("btime", out var bt)) btime = bt.GetInt32();
                             if (root.TryGetProperty("winc", out var wi)) winc = wi.GetInt32();
@@ -259,7 +260,7 @@ namespace ChessEngine
                         var moveCount = moveTokens.Length;
                         var ourTurn = isWhite ? (moveCount % 2 == 0) : (moveCount % 2 == 1);
 
-                        if (ourTurn)
+                        if (ourTurn && lineHadPositionUpdate)
                         {
                             string? bestMove;
                             string? ponderMove;
@@ -311,6 +312,12 @@ namespace ChessEngine
                             if (string.IsNullOrEmpty(bestMove) || bestMove == "(none)" || bestMove == "0000")
                             {
                                 await ResignAsync(client, gameId);
+                                break;
+                            }
+
+                            if (!Uci.IsMoveLegalInPosition(positionFen, moves, bestMove))
+                            {
+                                Console.WriteLine($"Lichess: skipping illegal move {bestMove} in position (desync or engine bug)");
                                 break;
                             }
 

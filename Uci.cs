@@ -239,6 +239,8 @@ namespace ChessEngine
                 }
                 if (!found && legal.Count > 0)
                     best = legal[0];
+                if (legal.Count == 0)
+                    best = default;
             }
 
             string bestStr = best.From == best.To && best.Promotion == Piece.Empty ? "0000" : best.ToString();
@@ -287,6 +289,31 @@ namespace ChessEngine
         {
             Console.WriteLine(line);
             Console.Out.Flush();
+        }
+
+        /// <summary>
+        /// Validates that a UCI move is legal in the position described by positionFen and moves.
+        /// Used by Lichess bot to catch desync/engine bugs before sending to the API.
+        /// </summary>
+        public static bool IsMoveLegalInPosition(string? positionFen, string moves, string uciMove)
+        {
+            if (string.IsNullOrEmpty(uciMove) || uciMove == "0000") return false;
+
+            var board = new Board();
+            if (string.IsNullOrEmpty(positionFen) || string.Equals(positionFen, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", StringComparison.Ordinal))
+                Fen.Load(board, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+            else
+                Fen.Load(board, positionFen);
+
+            foreach (var s in moves.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                if (!TryApplyUciMove(board, s)) return false;
+
+            if (!TryParseUciMove(uciMove, board.WhiteToMove, out int from, out int to, out Piece promo))
+                return false;
+            var legal = MoveGenerator.GenerateLegalMoves(board);
+            foreach (var m in legal)
+                if (m.From == from && m.To == to && m.Promotion == promo) return true;
+            return false;
         }
 
         private static bool TryApplyUciMove(Board board, string uciMove)

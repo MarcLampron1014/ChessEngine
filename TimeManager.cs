@@ -76,6 +76,9 @@ namespace ChessEngine
             MaxTimeMs = time;
         }
 
+        private const int WinningScoreThreshold = 180; // centipawns; score is from side-to-move perspective
+        private const int LosingScoreThreshold = 180;  // when losing, extend time to find best defense or a hold
+
         public void OnIterationComplete(int depth, int score)
         {
             if (depth == 1)
@@ -90,6 +93,12 @@ namespace ChessEngine
             if (scoreDelta <= StabilityThreshold)
             {
                 _stableIterations++;
+                // When clearly winning and stable, extend time to find the conversion
+                if (score >= WinningScoreThreshold && _stableIterations >= 1)
+                    ExtendTime(1.15);
+                // When clearly losing and stable, extend time to find the best defense or a draw
+                if (score <= -LosingScoreThreshold && _stableIterations >= 1)
+                    ExtendTime(1.15);
             }
             else
             {
@@ -111,7 +120,11 @@ namespace ChessEngine
             if (elapsedMs >= EffectiveBaseTime)
                 return true;
 
-            return _stableIterations >= StableIterationsForEarlyExit && elapsedMs >= BaseTimeMs / 2;
+            // When winning or losing, require a higher minimum fraction of base time before allowing early exit
+            bool winning = _lastScore >= WinningScoreThreshold;
+            bool losing = _lastScore <= -LosingScoreThreshold;
+            long minTimeBeforeEarlyExit = (winning || losing) ? (BaseTimeMs * 3) / 4 : BaseTimeMs / 2;
+            return _stableIterations >= StableIterationsForEarlyExit && elapsedMs >= minTimeBeforeEarlyExit;
         }
 
         public bool MustStop(long elapsedMs) => elapsedMs >= MaxTimeMs;

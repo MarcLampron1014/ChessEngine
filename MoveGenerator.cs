@@ -88,6 +88,47 @@ namespace ChessEngine
         }
 
         /// <summary>
+        /// Generate legal single-push moves for passed pawns (or pawns on 7th rank) into a preallocated array.
+        /// Used in quiescence to see conversion moves. Returns the number of moves generated.
+        /// </summary>
+        public static int GenerateLegalPassedPawnPushes(Board board, Move[] moves)
+        {
+            ulong pawns = board.WhiteToMove ? board.WP : board.BP;
+            ulong empty = ~board.AllPieces;
+            bool white = board.WhiteToMove;
+            int direction = white ? 8 : -8;
+            ulong prePromotionRank = white ? Bitboard.Rank8 : Bitboard.Rank1;
+            ulong seventhRank = white ? Bitboard.Rank7 : Bitboard.Rank2; // rank index 6 for white, 1 for black
+            int count = 0;
+
+            ulong singlePush = white ? Bitboard.ShiftNorth(pawns) : Bitboard.ShiftSouth(pawns);
+            singlePush &= empty;
+            singlePush &= ~prePromotionRank; // exclude promotions (already in captures)
+
+            ulong candidates = singlePush != 0 ? (white ? singlePush >> 8 : singlePush << 8) : 0; // from squares
+            if (candidates == 0) return 0;
+
+            while (candidates != 0)
+            {
+                int from = Bitboard.PopLsb(ref candidates);
+                int to = from + direction;
+                bool isPassed = Evaluator.IsPassedPawn(board, from, white);
+                int rank = Bitboard.RankOf(from);
+                bool onSeventh = white ? (rank == 6) : (rank == 1);
+                if (!isPassed && !onSeventh)
+                    continue;
+
+                Move move = new Move(from, to);
+                board.MakeMove(move);
+                if (!board.IsKingInCheck(white))
+                    moves[count++] = move;
+                board.UndoMove(move);
+            }
+
+            return count;
+        }
+
+        /// <summary>
         /// Generate all pseudo-legal moves into an array. Returns move count.
         /// </summary>
         public static int GenerateMoves(Board board, Move[] moves)

@@ -796,7 +796,17 @@ namespace ChessEngine
             // Use full eval for null move and futility when depth >= 3 to avoid wrong cutoffs
             int staticEval = (mightRazor || mightRFP || depth >= 3) ? Evaluator.Evaluate(board) : quickEval;
 
-            if (!isPV && !inCheck && depth <= 2)
+            // Winning extension: at root only, in endgame with decisive advantage, extend once
+            const int WinningExtensionPhaseThreshold = 8;
+            const int WinningExtensionEvalThreshold = 150;
+            if (!inCheck && ply == 0 && depth >= 4 && board.Phase <= WinningExtensionPhaseThreshold && staticEval >= WinningExtensionEvalThreshold)
+                depth++;
+
+            // When losing by more than this we don't razor/prune so we search for a hold
+            const int LosingMargin = 200;
+
+            // Razor: when not losing badly, try quiesce cutoff; when losing we search all moves to find a hold
+            if (!isPV && !inCheck && depth <= 2 && staticEval >= alpha - LosingMargin)
             {
                 if (staticEval + razorMargin < alpha)
                 {
@@ -815,7 +825,10 @@ namespace ChessEngine
             }
 
             // Null move pruning with variable R (skip in endgame where zugzwang is common)
-            if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board) && board.Phase >= 6)
+            // Disable when phase <= 6 and we're winning to avoid missing slow zugzwang wins
+            // Disable when we're losing so we actually search our defensive moves
+            bool allowNullMove = (board.Phase > 6 || staticEval - beta <= 100) && (staticEval >= alpha - 100);
+            if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board) && board.Phase >= 6 && allowNullMove)
             {
                 int R = 3 + depth / 6;
                 if (staticEval - beta > 200) R++; // More aggressive when winning
@@ -861,9 +874,16 @@ namespace ChessEngine
             Move bestMove = default;
             int movesSearched = 0;
 
-            // Futility: depth <= 4 with larger margin at depth 4 (200 cp per ply)
+            // Improving: side to move's position is already good (conversion: don't over-prune)
+            const int ImprovingMargin = 50;
+            bool improving = staticEval >= alpha - ImprovingMargin;
+
+            // Losing: we need to find a hold (draw/defense), so don't over-prune
+            bool losing = staticEval < alpha - LosingMargin;
+
+            // Futility: depth <= 4 with larger margin at depth 4 (200 cp per ply); skip when losing so we don't prune the saving move
             int[] futilityMargins = { 0, 200, 400, 600, 1000 };
-            bool canFutilityPrune = !inCheck && !isPV && depth <= 4 && depth < futilityMargins.Length && staticEval + futilityMargins[depth] < alpha;
+            bool canFutilityPrune = !inCheck && !isPV && !losing && depth <= 4 && depth < futilityMargins.Length && staticEval + futilityMargins[depth] < alpha;
 
             Move prevMove = PreviousMove;
             var picker = new MovePicker(board, MoveStacks[ply], ttMove, ply);
@@ -876,8 +896,8 @@ namespace ChessEngine
                 bool isQuiet = !move.IsCapture && !move.IsPromotion;
                 bool isTTMove = MovesEqual(move, ttMove);
 
-                // LMP: only at depth >= 4 so we don't prune good moves at low depth
-                if (!isPV && !inCheck && depth >= 4 && movesSearched > 0 && isQuiet)
+                // LMP: skip when improving or losing so we don't prune conversion or the one saving move
+                if (!isPV && !inCheck && depth >= 4 && movesSearched > 0 && isQuiet && !improving && !losing)
                 {
                     if (depth < LMPThresholds.Length && movesSearched >= LMPThresholds[depth])
                         continue;
@@ -902,7 +922,7 @@ namespace ChessEngine
                 int newDepth = depth - 1 + extension;
 
                 int reduction = 0;
-                if (depth >= 3 && movesSearched >= 4 && isQuiet && !inCheck)
+                if (depth >= 3 && movesSearched >= 4 && isQuiet && !inCheck && !improving && !losing)
                 {
                     reduction = 1 + (depth / 3) + (movesSearched / 8);
                     reduction = Math.Min(reduction, depth - 2);
@@ -1135,17 +1155,14 @@ namespace ChessEngine
             if (standPat > alpha)
                 alpha = standPat;
 
-            // Use GenerateLegalCaptures directly - much faster than generating all moves
+            // Stage 1: Captures and promotions (GenerateLegalCaptures includes promotion pushes)
             int qPly2 = Math.Min(ply, MaxPly - 1);
             Move[] captureMoves = MoveStacks[qPly2];
             int noisyCount = MoveGenerator.GenerateLegalCaptures(board, captureMoves);
 
-            if (noisyCount == 0)
-                return alpha;
+            if (noisyCount > 0)
+                OrderMoves(board, captureMoves, noisyCount, default, qPly2);
 
-            OrderMoves(board, captureMoves, noisyCount, default, qPly2);
-
-            // Delta pruning margin
             const int DeltaMargin = 200;
 
             for (int i = 0; i < noisyCount; i++)
@@ -1172,6 +1189,24 @@ namespace ChessEngine
                         continue;
                 }
 
+                board.MakeMove(move);
+                int score = -Quiesce(board, -beta, -alpha, ply + 1);
+                board.UndoMove(move);
+
+                if (score >= beta)
+                    return beta;
+                if (score > alpha)
+                    alpha = score;
+            }
+
+            // Stage 2: Passed-pawn pushes (conversion moves; limit to 4 to keep quiescence fast)
+            int passerCount = MoveGenerator.GenerateLegalPassedPawnPushes(board, captureMoves);
+            const int MaxPassedPawnPushesInQuiesce = 4;
+            int passerLimit = Math.Min(passerCount, MaxPassedPawnPushesInQuiesce);
+
+            for (int i = 0; i < passerLimit; i++)
+            {
+                Move move = captureMoves[i];
                 board.MakeMove(move);
                 int score = -Quiesce(board, -beta, -alpha, ply + 1);
                 board.UndoMove(move);

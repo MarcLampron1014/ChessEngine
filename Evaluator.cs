@@ -464,6 +464,17 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ulong GetPassedPawnMask(int sq, bool white) => PassedPawnMasks[white ? 1 : 0, sq];
 
+        /// <summary>
+        /// Returns true if the pawn at sq for the given color has no enemy pawns in its path to promotion.
+        /// Used by quiescence to generate passed-pawn pushes.
+        /// </summary>
+        public static bool IsPassedPawn(Board board, int sq, bool white)
+        {
+            ulong mask = PassedPawnMasks[white ? 1 : 0, sq];
+            ulong enemyPawns = white ? board.BP : board.WP;
+            return (enemyPawns & mask) == 0;
+        }
+
         private static void EvaluateBishopPair(Board board, ref int mgScore, ref int egScore)
         {
             if (Bitboard.PopCount(board.WB) >= 2)
@@ -911,12 +922,18 @@ namespace ChessEngine
             // King-pawn proximity in endgame (reuse passed pawns from pawn structure eval)
             EvaluateKingPawnProximity(wkSq, bkSq, wPassedPawns, bPassedPawns, ref egScore);
 
-            // Mop-up evaluation for winning positions
-            // Compute material balance once here instead of calling GetMaterialBalance
+            // Mop-up evaluation for winning positions (threshold 200 cp so "up a pawn" endgames get guidance)
             int materialBalance = ComputeMaterialBalance(board);
-            if (Math.Abs(materialBalance) >= 400)
+            const int MopUpMaterialThreshold = 200;
+            if (Math.Abs(materialBalance) >= MopUpMaterialThreshold)
             {
-                EvaluateMopUp(wkSq, bkSq, materialBalance, ref egScore);
+                int mopUpDelta = 0;
+                EvaluateMopUp(wkSq, bkSq, materialBalance, ref mopUpDelta);
+                // Scale mop-up in late middlegame (phase 12..19) so conversion preference starts earlier
+                if (phase < 12)
+                    egScore += mopUpDelta;
+                else
+                    egScore += (mopUpDelta * (P.TotalPhase - 4 - phase)) / 8;
             }
         }
 
