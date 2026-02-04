@@ -50,19 +50,23 @@ namespace ChessEngine
             {
                 if (args.Length < 2)
                 {
-                    Console.WriteLine("Usage: ChessEngine tune <dataset_file> [iterations] [max_positions]");
+                    Console.WriteLine("Usage: ChessEngine tune <dataset_file> [iterations] [max_positions] [tune_subset_size]");
                     Console.WriteLine("  dataset_file: .csv (fen,result) or .txt (FEN;result) — format auto-detected");
                     Console.WriteLine("  iterations: Max tuning iterations (default 100)");
                     Console.WriteLine("  max_positions: Optional cap (e.g. 500000) for large files");
+                    Console.WriteLine("  tune_subset_size: Optional subset for fast param steps (e.g. 50000); full set for iteration/convergence error");
                     return;
                 }
 
                 string posFile = args[1];
                 int maxIter = args.Length > 2 && int.TryParse(args[2], out int i) ? i : 100;
                 int? maxPos = null;
+                int? tuneSubset = null;
                 if (args.Length > 3 && int.TryParse(args[3], out int mp) && mp > 0)
                     maxPos = mp;
-                Tuner.RunTuning(posFile, maxIter, maxPos);
+                if (args.Length > 4 && int.TryParse(args[4], out int ts) && ts > 0)
+                    tuneSubset = ts;
+                Tuner.RunTuning(posFile, maxIter, maxPos, tuneSubset);
                 return;
             }
 

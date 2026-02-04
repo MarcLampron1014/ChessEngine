@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Threading;
 
 namespace ChessEngine
 {
@@ -22,11 +23,13 @@ namespace ChessEngine
         private const int RookPhase = 2;
         private const int QueenPhase = 4;
 
-        // Eval cache: keyed by Zobrist hash, stores static eval score
+        // Eval cache: keyed by Zobrist hash, stores static eval score (thread-local for parallel search)
         // Size: 2^20 entries (~16MB) - power of 2 for fast masking
         private const int EvalCacheSize = 1 << 20;
         private const ulong EvalCacheMask = EvalCacheSize - 1;
-        private static readonly EvalCacheEntry[] _evalCache = new EvalCacheEntry[EvalCacheSize];
+        private static readonly ThreadLocal<EvalCacheEntry[]> _evalCacheTls = new ThreadLocal<EvalCacheEntry[]>(() => new EvalCacheEntry[EvalCacheSize]);
+        private static volatile int _evalCacheGeneration;
+        private static readonly ThreadLocal<int> _myEvalCacheGeneration = new ThreadLocal<int>(() => -1);
 
         // Precomputed lookup tables for performance
         private static readonly ulong[,] PassedPawnMasks = new ulong[2, 64]; // [white=1/black=0, square]
@@ -98,17 +101,28 @@ namespace ChessEngine
         }
 
         /// <summary>
-        /// Clears the evaluation cache. Call on ucinewgame.
+        /// Clears the evaluation cache on all threads. Call on ucinewgame.
         /// </summary>
         public static void ClearCache()
         {
-            Array.Clear(_evalCache, 0, _evalCache.Length);
+            _evalCacheGeneration++;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void EnsureEvalCacheCurrent()
+        {
+            if (_myEvalCacheGeneration.Value != _evalCacheGeneration)
+            {
+                Array.Clear(_evalCacheTls.Value!, 0, EvalCacheSize);
+                _myEvalCacheGeneration.Value = _evalCacheGeneration;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool ProbeEvalCache(ulong hash, out int score)
         {
-            ref EvalCacheEntry entry = ref _evalCache[(int)(hash & EvalCacheMask)];
+            EnsureEvalCacheCurrent();
+            ref EvalCacheEntry entry = ref _evalCacheTls.Value![(int)(hash & EvalCacheMask)];
             if (entry.Hash == hash)
             {
                 score = entry.Score;
@@ -121,7 +135,8 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void StoreEvalCache(ulong hash, int score)
         {
-            ref EvalCacheEntry entry = ref _evalCache[(int)(hash & EvalCacheMask)];
+            EnsureEvalCacheCurrent();
+            ref EvalCacheEntry entry = ref _evalCacheTls.Value![(int)(hash & EvalCacheMask)];
             entry.Hash = hash;
             entry.Score = score;
         }

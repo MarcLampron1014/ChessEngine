@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -169,71 +170,220 @@ namespace ChessEngine
             var ourColor = gameStartGame.TryGetProperty("color", out var c) ? c.GetString() : "white";
             var isWhite = string.Equals(ourColor, "white", StringComparison.OrdinalIgnoreCase);
 
-            var streamUrl = $"/api/bot/game/stream/{gameId}";
-            using var request = new HttpRequestMessage(HttpMethod.Get, streamUrl);
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
+            var enginePath = GetEnginePath();
+            if (string.IsNullOrEmpty(enginePath) || !File.Exists(enginePath))
+            {
+                Console.WriteLine("Engine executable not found. Run the published exe from bin/Release/.../publish/.");
+                return;
+            }
 
-            await using var stream = await response.Content.ReadAsStreamAsync();
-            using var reader = new StreamReader(stream);
+            var workingDir = Path.GetDirectoryName(enginePath) ?? Directory.GetCurrentDirectory();
+            var psi = new ProcessStartInfo
+            {
+                FileName = enginePath,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+                WorkingDirectory = workingDir
+            };
 
-            string? positionFen = null;
-            string moves = "";
-            int wtime = 60000, btime = 60000, winc = 0, binc = 0;
-            string? status = null;
+            Process? process = null;
+            try
+            {
+                process = Process.Start(psi);
+                if (process == null) return;
 
+                var stdin = process.StandardInput;
+                var stdout = process.StandardOutput;
+
+                stdin.WriteLine("uci");
+                await ReadUntilAsync(stdout, "uciok");
+                stdin.WriteLine("isready");
+                await ReadUntilAsync(stdout, "readyok");
+
+                var pendingBestLock = new object();
+                var pendingBestHolder = new TaskCompletionSource<(string best, string? ponder)>?[1];
+                var readerTask = Task.Run(() => EngineReader(stdout, pendingBestLock, pendingBestHolder));
+
+                string? positionFen = null;
+                string moves = "";
+                int wtime = 60000, btime = 60000, winc = 0, binc = 0;
+                string? status = null;
+                bool weArePondering = false;
+                string? expectedPonderMove = null;
+
+                var streamUrl = $"/api/bot/game/stream/{gameId}";
+                using var request = new HttpRequestMessage(HttpMethod.Get, streamUrl);
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                response.EnsureSuccessStatusCode();
+
+                await using var stream = await response.Content.ReadAsStreamAsync();
+                using var reader = new StreamReader(stream);
+
+                string? line;
+                while ((line = await reader.ReadLineAsync()) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line);
+                        var root = doc.RootElement;
+
+                        if (root.TryGetProperty("state", out var state))
+                        {
+                            if (state.TryGetProperty("moves", out var m)) moves = m.GetString() ?? "";
+                            if (state.TryGetProperty("fen", out var f)) positionFen = f.GetString();
+                            if (state.TryGetProperty("wtime", out var wt)) wtime = wt.GetInt32();
+                            if (state.TryGetProperty("btime", out var bt)) btime = bt.GetInt32();
+                            if (state.TryGetProperty("winc", out var wi)) winc = wi.GetInt32();
+                            if (state.TryGetProperty("binc", out var bi)) binc = bi.GetInt32();
+                        }
+                        else
+                        {
+                            if (root.TryGetProperty("moves", out var m)) moves = m.GetString() ?? "";
+                            if (root.TryGetProperty("fen", out var f)) positionFen = f.GetString();
+                            if (root.TryGetProperty("wtime", out var wt)) wtime = wt.GetInt32();
+                            if (root.TryGetProperty("btime", out var bt)) btime = bt.GetInt32();
+                            if (root.TryGetProperty("winc", out var wi)) winc = wi.GetInt32();
+                            if (root.TryGetProperty("binc", out var bi)) binc = bi.GetInt32();
+                        }
+
+                        if (root.TryGetProperty("status", out var st)) status = st.GetString();
+
+                        if (!string.IsNullOrEmpty(status) && (status == "mate" || status == "resign" || status == "draw" || status == "stalemate" || status == "finished"))
+                            break;
+
+                        var moveTokens = moves.Trim().Length == 0 ? Array.Empty<string>() : moves.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        var moveCount = moveTokens.Length;
+                        var ourTurn = isWhite ? (moveCount % 2 == 0) : (moveCount % 2 == 1);
+
+                        if (ourTurn)
+                        {
+                            string? bestMove;
+                            string? ponderMove;
+
+                            if (weArePondering && moveCount > 0)
+                            {
+                                var lastMove = moveTokens[moveTokens.Length - 1];
+                                if (lastMove == expectedPonderMove)
+                                {
+                                    lock (pendingBestLock)
+                                    {
+                                        pendingBestHolder[0] = new TaskCompletionSource<(string, string?)>();
+                                    }
+                                    stdin.WriteLine("ponderhit");
+                                    (bestMove, ponderMove) = await pendingBestHolder[0]!.Task;
+                                }
+                                else
+                                {
+                                    lock (pendingBestLock)
+                                    {
+                                        pendingBestHolder[0] = new TaskCompletionSource<(string, string?)>();
+                                    }
+                                    stdin.WriteLine("stop");
+                                    await pendingBestHolder[0]!.Task;
+                                    var posCmd = BuildPositionCommand(positionFen, moves);
+                                    stdin.WriteLine(posCmd);
+                                    var goCmd = $"go wtime {wtime} btime {btime} winc {winc} binc {binc}";
+                                    stdin.WriteLine(goCmd);
+                                    lock (pendingBestLock)
+                                    {
+                                        pendingBestHolder[0] = new TaskCompletionSource<(string, string?)>();
+                                    }
+                                    (bestMove, ponderMove) = await pendingBestHolder[0]!.Task;
+                                }
+                            }
+                            else
+                            {
+                                var posCmd = BuildPositionCommand(positionFen, moves);
+                                stdin.WriteLine(posCmd);
+                                var goCmd = $"go wtime {wtime} btime {btime} winc {winc} binc {binc}";
+                                stdin.WriteLine(goCmd);
+                                lock (pendingBestLock)
+                                {
+                                    pendingBestHolder[0] = new TaskCompletionSource<(string, string?)>();
+                                }
+                                (bestMove, ponderMove) = await pendingBestHolder[0]!.Task;
+                            }
+
+                            if (string.IsNullOrEmpty(bestMove) || bestMove == "(none)" || bestMove == "0000")
+                            {
+                                await ResignAsync(client, gameId);
+                                break;
+                            }
+
+                            var moveOk = await SendMoveAsync(client, gameId, bestMove);
+                            if (!moveOk)
+                                break;
+
+                            if (!string.IsNullOrEmpty(ponderMove) && ponderMove != "(none)" && ponderMove != "0000")
+                            {
+                                var movesWithOurs = string.IsNullOrEmpty(moves) ? bestMove : moves + " " + bestMove;
+                                var movesWithPonder = movesWithOurs + " " + ponderMove;
+                                var ponderPosCmd = BuildPositionCommand(positionFen, movesWithPonder);
+                                stdin.WriteLine(ponderPosCmd);
+                                var ponderGoCmd = $"go ponder wtime {wtime} btime {btime} winc {winc} binc {binc}";
+                                stdin.WriteLine(ponderGoCmd);
+                                expectedPonderMove = ponderMove;
+                                weArePondering = true;
+                            }
+                            else
+                            {
+                                weArePondering = false;
+                                expectedPonderMove = null;
+                            }
+                        }
+                    }
+                    catch (JsonException) { /* skip */ }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    process?.Kill();
+                }
+                catch { /* ignore */ }
+            }
+        }
+
+        private static void EngineReader(StreamReader stdout, object pendingBestLock, TaskCompletionSource<(string best, string? ponder)>?[] pendingBestHolder)
+        {
+            string? line;
+            while ((line = stdout.ReadLine()) != null)
+            {
+                var t = line?.Trim() ?? "";
+                if (t.StartsWith("bestmove ", StringComparison.OrdinalIgnoreCase))
+                {
+                    var rest = t.Substring(9).Trim();
+                    var space = rest.IndexOf(' ');
+                    string best = space >= 0 ? rest.Substring(0, space) : rest;
+                    string? ponder = null;
+                    if (space >= 0)
+                    {
+                        var after = rest.Substring(space + 1).Trim();
+                        if (after.StartsWith("ponder ", StringComparison.OrdinalIgnoreCase))
+                            ponder = after.Substring(7).Trim();
+                    }
+                    lock (pendingBestLock)
+                    {
+                        var tcs = pendingBestHolder[0];
+                        pendingBestHolder[0] = null;
+                        tcs?.TrySetResult((best, string.IsNullOrEmpty(ponder) ? null : ponder));
+                    }
+                }
+            }
+        }
+
+        private static async Task ReadUntilAsync(StreamReader reader, string until)
+        {
             string? line;
             while ((line = await reader.ReadLineAsync()) != null)
             {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                try
-                {
-                    using var doc = JsonDocument.Parse(line);
-                    var root = doc.RootElement;
-
-                    if (root.TryGetProperty("state", out var state))
-                    {
-                        if (state.TryGetProperty("moves", out var m)) moves = m.GetString() ?? "";
-                        if (state.TryGetProperty("fen", out var f)) positionFen = f.GetString();
-                        if (state.TryGetProperty("wtime", out var wt)) wtime = wt.GetInt32();
-                        if (state.TryGetProperty("btime", out var bt)) btime = bt.GetInt32();
-                        if (state.TryGetProperty("winc", out var wi)) winc = wi.GetInt32();
-                        if (state.TryGetProperty("binc", out var bi)) binc = bi.GetInt32();
-                    }
-                    else
-                    {
-                        if (root.TryGetProperty("moves", out var m)) moves = m.GetString() ?? "";
-                        if (root.TryGetProperty("fen", out var f)) positionFen = f.GetString();
-                        if (root.TryGetProperty("wtime", out var wt)) wtime = wt.GetInt32();
-                        if (root.TryGetProperty("btime", out var bt)) btime = bt.GetInt32();
-                        if (root.TryGetProperty("winc", out var wi)) winc = wi.GetInt32();
-                        if (root.TryGetProperty("binc", out var bi)) binc = bi.GetInt32();
-                    }
-
-                    if (root.TryGetProperty("status", out var st)) status = st.GetString();
-
-                    if (!string.IsNullOrEmpty(status) && (status == "mate" || status == "resign" || status == "draw" || status == "stalemate" || status == "finished"))
-                        break;
-
-                    var moveCount = string.IsNullOrEmpty(moves) ? 0 : moves.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-                    var ourTurn = isWhite ? (moveCount % 2 == 0) : (moveCount % 2 == 1);
-
-                    if (ourTurn)
-                    {
-                        var bestMove = GetBestMoveFromEngine(positionFen, moves, wtime, btime, winc, binc);
-                        if (string.IsNullOrEmpty(bestMove) || bestMove == "(none)" || bestMove == "0000")
-                        {
-                            await ResignAsync(client, gameId);
-                            break;
-                        }
-
-                        var moveOk = await SendMoveAsync(client, gameId, bestMove);
-                        if (!moveOk)
-                            break;
-                    }
-                }
-                catch (JsonException) { /* skip */ }
+                if (line.Trim().StartsWith(until, StringComparison.OrdinalIgnoreCase))
+                    return;
             }
         }
 
@@ -275,67 +425,6 @@ namespace ChessEngine
             }
         }
 
-        private static string? GetBestMoveFromEngine(string? fen, string movesStr, int wtime, int btime, int winc, int binc)
-        {
-            var enginePath = GetEnginePath();
-            if (string.IsNullOrEmpty(enginePath) || !File.Exists(enginePath))
-            {
-                Console.WriteLine("Engine executable not found. Run the published exe from bin/Release/.../publish/.");
-                return null;
-            }
-
-            var workingDir = Path.GetDirectoryName(enginePath) ?? Directory.GetCurrentDirectory();
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = enginePath,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                CreateNoWindow = true,
-                WorkingDirectory = workingDir
-            };
-
-            Process? process = null;
-            try
-            {
-                process = Process.Start(psi);
-                if (process == null) return null;
-
-                var stdin = process.StandardInput;
-                var stdout = process.StandardOutput;
-
-                stdin.WriteLine("uci");
-                ReadUntil(stdout, "uciok");
-
-                stdin.WriteLine("isready");
-                ReadUntil(stdout, "readyok");
-
-                var positionCmd = BuildPositionCommand(fen, movesStr);
-                stdin.WriteLine(positionCmd);
-
-                var goCmd = $"go wtime {wtime} btime {btime} winc {winc} binc {binc}";
-                stdin.WriteLine(goCmd);
-
-                var bestMove = ReadUntilBestMove(stdout);
-                stdin.WriteLine("quit");
-                return bestMove;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Engine error: {ex.Message}");
-                return null;
-            }
-            finally
-            {
-                try
-                {
-                    process?.Kill();
-                }
-                catch { /* ignore */ }
-            }
-        }
-
         private static string BuildPositionCommand(string? fen, string movesStr)
         {
             var moves = movesStr.Trim();
@@ -348,33 +437,6 @@ namespace ChessEngine
             if (string.IsNullOrEmpty(moves))
                 return "position fen " + fen;
             return "position fen " + fen + " moves " + moves;
-        }
-
-        private static void ReadUntil(StreamReader reader, string until)
-        {
-            string? line;
-            while ((line = reader.ReadLine()) != null)
-            {
-                if (line.Trim().StartsWith(until, StringComparison.OrdinalIgnoreCase))
-                    return;
-            }
-        }
-
-        private static string? ReadUntilBestMove(StreamReader reader)
-        {
-            string? line;
-            while ((line = reader.ReadLine()) != null)
-            {
-                var t = line.Trim();
-                if (t.StartsWith("bestmove ", StringComparison.OrdinalIgnoreCase))
-                {
-                    var move = t.Substring(9).Trim();
-                    var space = move.IndexOf(' ');
-                    if (space >= 0) move = move.Substring(0, space);
-                    return move;
-                }
-            }
-            return null;
         }
 
         private static string? GetEnginePath()

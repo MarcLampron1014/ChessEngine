@@ -10,10 +10,13 @@ namespace ChessEngine
         private const string EngineName = "ChessEngine";
         private const string EngineAuthor = "marcl";
         private const int DefaultHashSizeMB = 64;
+        private const int DefaultThreads = 4;
 
         private static readonly TimeManager _timeManager = new TimeManager();
         private static Thread? _searchThread;
         private static Board? _goBoard;
+        private static int _numThreads = DefaultThreads;
+        private static bool _inPonderMode;
 
         public static void Run()
         {
@@ -38,6 +41,7 @@ namespace ChessEngine
                         WriteLineFlush($"id name {EngineName}");
                         WriteLineFlush($"id author {EngineAuthor}");
                         WriteLineFlush($"option name Hash type spin default {DefaultHashSizeMB} min 1 max 1024");
+                        WriteLineFlush($"option name Threads type spin default {DefaultThreads} min 1 max 512");
                         WriteLineFlush("uciok");
                         break;
                     case "isready":
@@ -81,6 +85,15 @@ namespace ChessEngine
                         Search.RequestStop();
                         if (_searchThread?.IsAlive == true)
                             _searchThread.Join(10000);
+                        if (_inPonderMode)
+                        {
+                            _inPonderMode = false;
+                            SendBestMoveFromLastResult(_goBoard, Search.GetLastResult());
+                        }
+                        break;
+                    case "ponderhit":
+                        _inPonderMode = false;
+                        SendBestMoveFromLastResult(_goBoard, Search.GetLastResult());
                         break;
                     case "quit":
                         Search.RequestStop();
@@ -114,6 +127,11 @@ namespace ChessEngine
                 TryParseInt(optionValue, out int sizeMB))
             {
                 Search.SetHashSize(Math.Max(1, Math.Min(1024, sizeMB)));
+            }
+            else if (optionName.Equals("Threads", StringComparison.OrdinalIgnoreCase) &&
+                TryParseInt(optionValue, out int threads))
+            {
+                _numThreads = Math.Max(1, Math.Min(512, threads));
             }
         }
 
@@ -154,12 +172,15 @@ namespace ChessEngine
         {
             int movetime = -1, wtime = -1, btime = -1, winc = 0, binc = 0, movestogo = 0;
             bool infinite = false;
+            bool ponder = false;
 
             for (int i = 1; i < parts.Length; i++)
             {
+                string t = parts[i].ToLowerInvariant();
+                if (t == "ponder")
+                    ponder = true;
                 if (i + 1 < parts.Length)
                 {
-                    string t = parts[i].ToLowerInvariant();
                     if (t == "movetime" && TryParseInt(parts[i + 1], out int mt)) { movetime = mt; i++; }
                     else if (t == "wtime" && TryParseInt(parts[i + 1], out int wt)) { wtime = wt; i++; }
                     else if (t == "btime" && TryParseInt(parts[i + 1], out int bt)) { btime = bt; i++; }
@@ -167,10 +188,11 @@ namespace ChessEngine
                     else if (t == "binc" && TryParseInt(parts[i + 1], out int bi)) { binc = bi; i++; }
                     else if (t == "movestogo" && TryParseInt(parts[i + 1], out int mtg)) { movestogo = mtg; i++; }
                 }
-                if (parts[i].ToLowerInvariant() == "infinite")
+                if (t == "infinite")
                     infinite = true;
             }
 
+            _inPonderMode = ponder;
             _goBoard = board;
             InitializeTimeManager(board, movetime, wtime, btime, winc, binc, movestogo, infinite);
 
@@ -178,16 +200,19 @@ namespace ChessEngine
             {
                 try
                 {
-                    var result = Search.FindBestMove(board, _timeManager, maxDepth: 64);
-                    SendBestMoveFromLastResult(board, result);
+                    var result = Search.FindBestMove(board, _timeManager, maxDepth: 64, numThreads: _numThreads);
+                    if (!_inPonderMode)
+                        SendBestMoveFromLastResult(board, result);
                 }
                 catch (Search.SearchTimeoutException)
                 {
-                    SendBestMoveFromLastResult(board, Search.GetLastResult());
+                    if (!_inPonderMode)
+                        SendBestMoveFromLastResult(board, Search.GetLastResult());
                 }
                 catch (Exception)
                 {
-                    SendBestMoveFromLastResult(board, Search.GetLastResult());
+                    if (!_inPonderMode)
+                        SendBestMoveFromLastResult(board, Search.GetLastResult());
                 }
             });
             _searchThread.IsBackground = true;
@@ -202,11 +227,6 @@ namespace ChessEngine
             if (board != null)
             {
                 var legal = MoveGenerator.GenerateLegalMoves(board);
-                if (legal.Count == 0)
-                {
-                    WriteLineFlush("bestmove 0000");
-                    return;
-                }
                 bool found = false;
                 foreach (var m in legal)
                 {
@@ -217,12 +237,20 @@ namespace ChessEngine
                         break;
                     }
                 }
-                if (!found)
+                if (!found && legal.Count > 0)
                     best = legal[0];
             }
 
             string bestStr = best.From == best.To && best.Promotion == Piece.Empty ? "0000" : best.ToString();
-            WriteLineFlush($"bestmove {bestStr}");
+            if (r.PonderMove.From != r.PonderMove.To)
+            {
+                string ponderStr = r.PonderMove.ToString();
+                WriteLineFlush($"bestmove {bestStr} ponder {ponderStr}");
+            }
+            else
+            {
+                WriteLineFlush($"bestmove {bestStr}");
+            }
         }
 
         private static void InitializeTimeManager(Board board, int movetime, int wtime, int btime,

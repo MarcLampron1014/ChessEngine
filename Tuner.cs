@@ -30,6 +30,36 @@ namespace ChessEngine
         // Convergence threshold
         private const double ConvergenceThreshold = 1e-6;
 
+        /// <summary>Default subset size for fast parameter steps (use full set if null or >= count).</summary>
+        public const int DefaultTuneSubsetSize = 50_000;
+
+        /// <summary>Re-optimize K every this many iterations (0 = only at start).</summary>
+        public const int KReoptimizeInterval = 5;
+
+        /// <summary>
+        /// Returns a random subset of positions for fast tuning steps.
+        /// If subsetSize is null or >= positions.Count, returns the full list (by reference to avoid copy).
+        /// </summary>
+        public static List<TuningPosition> GetRandomSubset(List<TuningPosition> positions, int? subsetSize, int seed)
+        {
+            if (!subsetSize.HasValue || subsetSize.Value <= 0 || subsetSize.Value >= positions.Count)
+                return positions;
+
+            int n = subsetSize.Value;
+            var rnd = new Random(seed);
+            var indices = new int[positions.Count];
+            for (int i = 0; i < indices.Length; i++) indices[i] = i;
+            for (int i = indices.Length - 1; i > 0; i--)
+            {
+                int j = rnd.Next(i + 1);
+                (indices[i], indices[j]) = (indices[j], indices[i]);
+            }
+            var subset = new List<TuningPosition>(n);
+            for (int i = 0; i < n; i++)
+                subset.Add(positions[indices[i]]);
+            return subset;
+        }
+
         /// <summary>
         /// Loads positions from a file, auto-detecting format.
         /// Supports: CSV (fen,result or similar), FEN;result, or FEN [result].
@@ -371,21 +401,48 @@ namespace ChessEngine
         }
 
         /// <summary>
-        /// Finds optimal K value for sigmoid scaling.
+        /// Finds optimal K value for sigmoid scaling (coarse-to-fine: 4 coarse points, then refine in best interval).
+        /// When subsetSize is set and less than positions.Count, uses a random subset for speed.
         /// </summary>
-        public static double OptimizeK(List<TuningPosition> positions)
+        public static double OptimizeK(List<TuningPosition> positions, int? subsetSize = null)
         {
             Console.WriteLine("Optimizing K...");
+            var evalList = subsetSize.HasValue && subsetSize.Value > 0 && subsetSize.Value < positions.Count
+                ? GetRandomSubset(positions, subsetSize.Value, 0)
+                : positions;
 
             double bestK = 1.0;
             double bestError = double.MaxValue;
 
-            // Search K from 0.5 to 2.0 in steps of 0.01
-            for (double testK = 0.5; testK <= 2.0; testK += 0.01)
+            // Coarse: 4 points
+            double[] coarseK = { 0.5, 1.0, 1.5, 2.0 };
+            int bestIdx = 0;
+            foreach (double testK in coarseK)
             {
                 K = testK;
-                Evaluator.ClearCache(); // Clear cache since we changed K
-                double error = ComputeErrorParallel(positions);
+                Evaluator.ClearCache();
+                double error = ComputeErrorParallel(evalList);
+                if (error < bestError)
+                {
+                    bestError = error;
+                    bestK = testK;
+                    bestIdx = Array.IndexOf(coarseK, testK);
+                }
+            }
+
+            // Refine in best interval [a, b]
+            double a = bestIdx == 0 ? 0.5 : coarseK[bestIdx] - 0.25;
+            double b = bestIdx == coarseK.Length - 1 ? 2.0 : coarseK[bestIdx] + 0.25;
+            a = Math.Max(0.5, a);
+            b = Math.Min(2.0, b);
+
+            int refinePoints = 10;
+            for (int i = 0; i <= refinePoints; i++)
+            {
+                double testK = a + (b - a) * i / refinePoints;
+                K = testK;
+                Evaluator.ClearCache();
+                double error = ComputeErrorParallel(evalList);
                 if (error < bestError)
                 {
                     bestError = error;
@@ -399,10 +456,10 @@ namespace ChessEngine
         }
 
         /// <summary>
-        /// Tunes a single integer parameter using local search.
+        /// Tunes a single integer parameter using local search with adaptive step (greedy line search).
         /// Returns the new optimal value.
         /// </summary>
-        public static int TuneParameter(List<TuningPosition> positions, 
+        public static int TuneParameter(List<TuningPosition> positions,
             Func<int> getter, Action<int> setter, string name, int step = 1)
         {
             int current = getter();
@@ -418,34 +475,151 @@ namespace ChessEngine
             Evaluator.ClearCache();
             double errorMinus = ComputeErrorParallel(positions);
 
-            // Choose best
+            const int maxExtraSteps = 3;
+
             if (errorPlus < currentError && errorPlus <= errorMinus)
             {
+                // +step wins: greedy line search in positive direction
+                int bestVal = current + step;
+                double bestErr = errorPlus;
                 setter(current + step);
                 Evaluator.ClearCache();
-                Console.WriteLine($"  {name}: {current} -> {current + step} (error: {errorPlus:F8})");
-                return current + step;
+                for (int i = 0; i < maxExtraSteps; i++)
+                {
+                    int nextVal = getter() + step;
+                    setter(nextVal);
+                    Evaluator.ClearCache();
+                    double err = ComputeErrorParallel(positions);
+                    if (err < bestErr) { bestErr = err; bestVal = nextVal; }
+                    else { setter(bestVal); Evaluator.ClearCache(); break; }
+                }
+                Console.WriteLine($"  {name}: {current} -> {bestVal} (error: {bestErr:F8})");
+                return bestVal;
             }
             else if (errorMinus < currentError)
             {
-                // Already set to current - step
-                Console.WriteLine($"  {name}: {current} -> {current - step} (error: {errorMinus:F8})");
-                return current - step;
+                // -step wins: greedy line search in negative direction
+                int bestVal = current - step;
+                double bestErr = errorMinus;
+                setter(current - step);
+                Evaluator.ClearCache();
+                for (int i = 0; i < maxExtraSteps; i++)
+                {
+                    int nextVal = getter() - step;
+                    setter(nextVal);
+                    Evaluator.ClearCache();
+                    double err = ComputeErrorParallel(positions);
+                    if (err < bestErr) { bestErr = err; bestVal = nextVal; }
+                    else { setter(bestVal); Evaluator.ClearCache(); break; }
+                }
+                Console.WriteLine($"  {name}: {current} -> {bestVal} (error: {bestErr:F8})");
+                return bestVal;
+            }
+            else if (step > 1)
+            {
+                // Neither wins: try half-step refinement
+                setter(current);
+                Evaluator.ClearCache();
+                int halfStep = step / 2;
+                if (halfStep < 1) return current;
+                setter(current + halfStep);
+                Evaluator.ClearCache();
+                double errPlusHalf = ComputeErrorParallel(positions);
+                setter(current - halfStep);
+                Evaluator.ClearCache();
+                double errMinusHalf = ComputeErrorParallel(positions);
+                if (errPlusHalf < currentError && errPlusHalf <= errMinusHalf)
+                {
+                    setter(current + halfStep);
+                    Evaluator.ClearCache();
+                    Console.WriteLine($"  {name}: {current} -> {current + halfStep} (error: {errPlusHalf:F8})");
+                    return current + halfStep;
+                }
+                if (errMinusHalf < currentError)
+                {
+                    Console.WriteLine($"  {name}: {current} -> {current - halfStep} (error: {errMinusHalf:F8})");
+                    return current - halfStep;
+                }
+                setter(current);
+                Evaluator.ClearCache();
+                return current;
             }
             else
             {
-                // Keep original
                 setter(current);
                 Evaluator.ClearCache();
                 return current;
             }
         }
 
+        private static List<(string name, Func<int> getter, Action<int> setter, int step)> BuildParameterActions(EvalParams p)
+        {
+            var list = new List<(string, Func<int>, Action<int>, int)>
+            {
+                ("PawnValueMG", () => p.PawnValueMG, v => p.PawnValueMG = v, 5),
+                ("KnightValueMG", () => p.KnightValueMG, v => p.KnightValueMG = v, 5),
+                ("BishopValueMG", () => p.BishopValueMG, v => p.BishopValueMG = v, 5),
+                ("RookValueMG", () => p.RookValueMG, v => p.RookValueMG = v, 5),
+                ("QueenValueMG", () => p.QueenValueMG, v => p.QueenValueMG = v, 10),
+                ("PawnValueEG", () => p.PawnValueEG, v => p.PawnValueEG = v, 5),
+                ("KnightValueEG", () => p.KnightValueEG, v => p.KnightValueEG = v, 5),
+                ("BishopValueEG", () => p.BishopValueEG, v => p.BishopValueEG = v, 5),
+                ("RookValueEG", () => p.RookValueEG, v => p.RookValueEG = v, 5),
+                ("QueenValueEG", () => p.QueenValueEG, v => p.QueenValueEG = v, 10),
+                ("BishopPairBonusMG", () => p.BishopPairBonusMG, v => p.BishopPairBonusMG = v, 1),
+                ("BishopPairBonusEG", () => p.BishopPairBonusEG, v => p.BishopPairBonusEG = v, 1),
+                ("RookOpenFileBonusMG", () => p.RookOpenFileBonusMG, v => p.RookOpenFileBonusMG = v, 1),
+                ("RookOpenFileBonusEG", () => p.RookOpenFileBonusEG, v => p.RookOpenFileBonusEG = v, 1),
+                ("RookSemiOpenFileBonusMG", () => p.RookSemiOpenFileBonusMG, v => p.RookSemiOpenFileBonusMG = v, 1),
+                ("RookSemiOpenFileBonusEG", () => p.RookSemiOpenFileBonusEG, v => p.RookSemiOpenFileBonusEG = v, 1),
+                ("DoubledPawnPenaltyMG", () => p.DoubledPawnPenaltyMG, v => p.DoubledPawnPenaltyMG = v, 1),
+                ("DoubledPawnPenaltyEG", () => p.DoubledPawnPenaltyEG, v => p.DoubledPawnPenaltyEG = v, 1),
+                ("IsolatedPawnPenaltyMG", () => p.IsolatedPawnPenaltyMG, v => p.IsolatedPawnPenaltyMG = v, 1),
+                ("IsolatedPawnPenaltyEG", () => p.IsolatedPawnPenaltyEG, v => p.IsolatedPawnPenaltyEG = v, 1),
+                ("MobilityBonusMG", () => p.MobilityBonusMG, v => p.MobilityBonusMG = v, 1),
+                ("MobilityBonusEG", () => p.MobilityBonusEG, v => p.MobilityBonusEG = v, 1),
+                ("QueenMobilityBonusMG", () => p.QueenMobilityBonusMG, v => p.QueenMobilityBonusMG = v, 1),
+                ("QueenMobilityBonusEG", () => p.QueenMobilityBonusEG, v => p.QueenMobilityBonusEG = v, 1),
+                ("KingShieldBonus", () => p.KingShieldBonus, v => p.KingShieldBonus = v, 1),
+                ("KingOpenFilePenalty", () => p.KingOpenFilePenalty, v => p.KingOpenFilePenalty = v, 1),
+                ("RookBehindPasserBonus", () => p.RookBehindPasserBonus, v => p.RookBehindPasserBonus = v, 1),
+                ("KnightOutpostBonusMG", () => p.KnightOutpostBonusMG, v => p.KnightOutpostBonusMG = v, 1),
+                ("KnightOutpostBonusEG", () => p.KnightOutpostBonusEG, v => p.KnightOutpostBonusEG = v, 1),
+                ("RookOnSeventhBonusMG", () => p.RookOnSeventhBonusMG, v => p.RookOnSeventhBonusMG = v, 1),
+                ("RookOnSeventhBonusEG", () => p.RookOnSeventhBonusEG, v => p.RookOnSeventhBonusEG = v, 1),
+                ("RookOnSeventhWithKingBonus", () => p.RookOnSeventhWithKingBonus, v => p.RookOnSeventhWithKingBonus = v, 1),
+                ("KingAttackWeightPenalty", () => p.KingAttackWeightPenalty, v => p.KingAttackWeightPenalty = v, 1),
+                ("BackwardPawnPenaltyMG", () => p.BackwardPawnPenaltyMG, v => p.BackwardPawnPenaltyMG = v, 1),
+                ("BackwardPawnPenaltyEG", () => p.BackwardPawnPenaltyEG, v => p.BackwardPawnPenaltyEG = v, 1),
+                ("SpaceBonusMG", () => p.SpaceBonusMG, v => p.SpaceBonusMG = v, 1),
+                ("BadBishopPenalty", () => p.BadBishopPenalty, v => p.BadBishopPenalty = v, 1),
+                ("BishopLongDiagonalBonus", () => p.BishopLongDiagonalBonus, v => p.BishopLongDiagonalBonus = v, 1),
+                ("QueenTropismBonus", () => p.QueenTropismBonus, v => p.QueenTropismBonus = v, 1),
+                ("KingOwnPasserProximity", () => p.KingOwnPasserProximity, v => p.KingOwnPasserProximity = v, 1),
+                ("KingEnemyPasserProximity", () => p.KingEnemyPasserProximity, v => p.KingEnemyPasserProximity = v, 1),
+                ("MopUpCenterDistanceWeight", () => p.MopUpCenterDistanceWeight, v => p.MopUpCenterDistanceWeight = v, 1),
+                ("MopUpKingProximityWeight", () => p.MopUpKingProximityWeight, v => p.MopUpKingProximityWeight = v, 1)
+            };
+            return list;
+        }
+
+        private static void ShuffleParameterActions(List<(string name, Func<int> getter, Action<int> setter, int step)> list, int seed)
+        {
+            var rnd = new Random(seed);
+            for (int i = list.Count - 1; i > 0; i--)
+            {
+                int j = rnd.Next(i + 1);
+                (list[i], list[j]) = (list[j], list[i]);
+            }
+        }
+
         /// <summary>
         /// Runs coordinate descent optimization on all tunable parameters.
         /// Accepts .csv, .txt, or any file; format is auto-detected (CSV or FEN;result).
+        /// When tuneSubsetSize is set and less than position count, parameter steps use a random subset for speed;
+        /// initial error, end-of-iteration error, and convergence use the full dataset.
         /// </summary>
-        public static void RunTuning(string positionsFile, int maxIterations = 100, int? maxPositions = null)
+        public static void RunTuning(string positionsFile, int maxIterations = 100, int? maxPositions = null, int? tuneSubsetSize = null)
         {
             Console.WriteLine("Loading positions...");
             var positions = LoadPositionsFromFile(positionsFile, maxPositions);
@@ -457,67 +631,36 @@ namespace ChessEngine
                 return;
             }
 
-            // First, optimize K
-            OptimizeK(positions);
+            int? effectiveSubset = tuneSubsetSize.HasValue && tuneSubsetSize.Value > 0 && tuneSubsetSize.Value < positions.Count ? tuneSubsetSize : null;
+            if (effectiveSubset.HasValue)
+                Console.WriteLine($"Tune subset size: {effectiveSubset.Value} (full set used for iteration/convergence error).");
+
+            // First, optimize K (coarse-to-fine, optionally on subset for speed)
+            OptimizeK(positions, effectiveSubset);
 
             double previousError = ComputeErrorParallel(positions);
             Console.WriteLine($"Initial error: {previousError:F8}");
 
             var p = EvalParams.Instance;
+            var paramActions = BuildParameterActions(p);
 
             for (int iter = 0; iter < maxIterations; iter++)
             {
                 Console.WriteLine($"\n=== Iteration {iter + 1} ===");
 
-                // Tune piece values
-                TuneParameter(positions, () => p.PawnValueMG, v => p.PawnValueMG = v, "PawnValueMG", 5);
-                TuneParameter(positions, () => p.KnightValueMG, v => p.KnightValueMG = v, "KnightValueMG", 5);
-                TuneParameter(positions, () => p.BishopValueMG, v => p.BishopValueMG = v, "BishopValueMG", 5);
-                TuneParameter(positions, () => p.RookValueMG, v => p.RookValueMG = v, "RookValueMG", 5);
-                TuneParameter(positions, () => p.QueenValueMG, v => p.QueenValueMG = v, "QueenValueMG", 10);
+                // Re-optimize K every N iterations
+                if (iter > 0 && KReoptimizeInterval > 0 && iter % KReoptimizeInterval == 0)
+                {
+                    OptimizeK(positions, effectiveSubset);
+                }
 
-                TuneParameter(positions, () => p.PawnValueEG, v => p.PawnValueEG = v, "PawnValueEG", 5);
-                TuneParameter(positions, () => p.KnightValueEG, v => p.KnightValueEG = v, "KnightValueEG", 5);
-                TuneParameter(positions, () => p.BishopValueEG, v => p.BishopValueEG = v, "BishopValueEG", 5);
-                TuneParameter(positions, () => p.RookValueEG, v => p.RookValueEG = v, "RookValueEG", 5);
-                TuneParameter(positions, () => p.QueenValueEG, v => p.QueenValueEG = v, "QueenValueEG", 10);
+                // Use random subset for parameter steps when configured
+                var tuneList = effectiveSubset.HasValue ? GetRandomSubset(positions, effectiveSubset.Value, iter) : positions;
 
-                // Tune bonuses/penalties
-                TuneParameter(positions, () => p.BishopPairBonusMG, v => p.BishopPairBonusMG = v, "BishopPairBonusMG");
-                TuneParameter(positions, () => p.BishopPairBonusEG, v => p.BishopPairBonusEG = v, "BishopPairBonusEG");
-                TuneParameter(positions, () => p.RookOpenFileBonusMG, v => p.RookOpenFileBonusMG = v, "RookOpenFileBonusMG");
-                TuneParameter(positions, () => p.RookOpenFileBonusEG, v => p.RookOpenFileBonusEG = v, "RookOpenFileBonusEG");
-                TuneParameter(positions, () => p.RookSemiOpenFileBonusMG, v => p.RookSemiOpenFileBonusMG = v, "RookSemiOpenFileBonusMG");
-                TuneParameter(positions, () => p.RookSemiOpenFileBonusEG, v => p.RookSemiOpenFileBonusEG = v, "RookSemiOpenFileBonusEG");
-                TuneParameter(positions, () => p.DoubledPawnPenaltyMG, v => p.DoubledPawnPenaltyMG = v, "DoubledPawnPenaltyMG");
-                TuneParameter(positions, () => p.DoubledPawnPenaltyEG, v => p.DoubledPawnPenaltyEG = v, "DoubledPawnPenaltyEG");
-                TuneParameter(positions, () => p.IsolatedPawnPenaltyMG, v => p.IsolatedPawnPenaltyMG = v, "IsolatedPawnPenaltyMG");
-                TuneParameter(positions, () => p.IsolatedPawnPenaltyEG, v => p.IsolatedPawnPenaltyEG = v, "IsolatedPawnPenaltyEG");
-                TuneParameter(positions, () => p.MobilityBonusMG, v => p.MobilityBonusMG = v, "MobilityBonusMG");
-                TuneParameter(positions, () => p.MobilityBonusEG, v => p.MobilityBonusEG = v, "MobilityBonusEG");
-                TuneParameter(positions, () => p.QueenMobilityBonusMG, v => p.QueenMobilityBonusMG = v, "QueenMobilityBonusMG");
-                TuneParameter(positions, () => p.QueenMobilityBonusEG, v => p.QueenMobilityBonusEG = v, "QueenMobilityBonusEG");
-                TuneParameter(positions, () => p.KingShieldBonus, v => p.KingShieldBonus = v, "KingShieldBonus");
-                TuneParameter(positions, () => p.KingOpenFilePenalty, v => p.KingOpenFilePenalty = v, "KingOpenFilePenalty");
-                TuneParameter(positions, () => p.RookBehindPasserBonus, v => p.RookBehindPasserBonus = v, "RookBehindPasserBonus");
-                TuneParameter(positions, () => p.KnightOutpostBonusMG, v => p.KnightOutpostBonusMG = v, "KnightOutpostBonusMG");
-                TuneParameter(positions, () => p.KnightOutpostBonusEG, v => p.KnightOutpostBonusEG = v, "KnightOutpostBonusEG");
-                TuneParameter(positions, () => p.RookOnSeventhBonusMG, v => p.RookOnSeventhBonusMG = v, "RookOnSeventhBonusMG");
-                TuneParameter(positions, () => p.RookOnSeventhBonusEG, v => p.RookOnSeventhBonusEG = v, "RookOnSeventhBonusEG");
-                TuneParameter(positions, () => p.RookOnSeventhWithKingBonus, v => p.RookOnSeventhWithKingBonus = v, "RookOnSeventhWithKingBonus");
-                TuneParameter(positions, () => p.KingAttackWeightPenalty, v => p.KingAttackWeightPenalty = v, "KingAttackWeightPenalty");
-                TuneParameter(positions, () => p.BackwardPawnPenaltyMG, v => p.BackwardPawnPenaltyMG = v, "BackwardPawnPenaltyMG");
-                TuneParameter(positions, () => p.BackwardPawnPenaltyEG, v => p.BackwardPawnPenaltyEG = v, "BackwardPawnPenaltyEG");
-                TuneParameter(positions, () => p.SpaceBonusMG, v => p.SpaceBonusMG = v, "SpaceBonusMG");
-                TuneParameter(positions, () => p.BadBishopPenalty, v => p.BadBishopPenalty = v, "BadBishopPenalty");
-                TuneParameter(positions, () => p.BishopLongDiagonalBonus, v => p.BishopLongDiagonalBonus = v, "BishopLongDiagonalBonus");
-                TuneParameter(positions, () => p.QueenTropismBonus, v => p.QueenTropismBonus = v, "QueenTropismBonus");
+                ShuffleParameterActions(paramActions, iter);
 
-                // Tune endgame weights
-                TuneParameter(positions, () => p.KingOwnPasserProximity, v => p.KingOwnPasserProximity = v, "KingOwnPasserProximity");
-                TuneParameter(positions, () => p.KingEnemyPasserProximity, v => p.KingEnemyPasserProximity = v, "KingEnemyPasserProximity");
-                TuneParameter(positions, () => p.MopUpCenterDistanceWeight, v => p.MopUpCenterDistanceWeight = v, "MopUpCenterDistanceWeight");
-                TuneParameter(positions, () => p.MopUpKingProximityWeight, v => p.MopUpKingProximityWeight = v, "MopUpKingProximityWeight");
+                foreach (var a in paramActions)
+                    TuneParameter(tuneList, a.getter, a.setter, a.name, a.step);
 
                 // Check convergence
                 double currentError = ComputeErrorParallel(positions);

@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace ChessEngine
 {
@@ -37,7 +38,11 @@ namespace ChessEngine
 
     public class TranspositionTable
     {
+        private const int LockCount = 4096;
+        private static readonly int LockMask = LockCount - 1;
+
         private TTEntry[] _table = Array.Empty<TTEntry>();
+        private readonly object[] _locks = new object[LockCount];
         private ulong _mask;
         private int _entries;
 
@@ -46,6 +51,8 @@ namespace ChessEngine
 
         public TranspositionTable(int sizeMB = 64)
         {
+            for (int i = 0; i < LockCount; i++)
+                _locks[i] = new object();
             Resize(sizeMB);
         }
 
@@ -63,73 +70,101 @@ namespace ChessEngine
             _table = new TTEntry[_entries];
         }
 
-        public void Clear() => Array.Clear(_table, 0, _table.Length);
+        public void Clear()
+        {
+            for (int i = 0; i < LockCount; i++)
+                Monitor.Enter(_locks[i]);
+            try
+            {
+                Array.Clear(_table, 0, _table.Length);
+            }
+            finally
+            {
+                for (int i = 0; i < LockCount; i++)
+                    Monitor.Exit(_locks[i]);
+            }
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Store(ulong hash, int depth, int score, TTFlag flag, Move bestMove, int ply)
         {
             int index = (int)(hash & _mask);
-            ref TTEntry entry = ref _table[index];
+            object bucketLock = _locks[index & LockMask];
+            lock (bucketLock)
+            {
+                ref TTEntry entry = ref _table[index];
+                // Replace if new entry has greater or equal depth (prefer newer)
+                if (depth < entry.Depth && entry.Hash == hash)
+                    return;
 
-            // Adjust mate scores for storage
-            if (score > MateThreshold)
-                score += ply;
-            else if (score < -MateThreshold)
-                score -= ply;
+                // Adjust mate scores for storage
+                if (score > MateThreshold)
+                    score += ply;
+                else if (score < -MateThreshold)
+                    score -= ply;
 
-            entry.Hash = hash;
-            entry.Score = (short)score;
-            entry.Depth = (byte)depth;
-            entry.Flag = flag;
-            entry.BestMove = TTEntry.EncodeMove(bestMove);
+                entry.Hash = hash;
+                entry.Score = (short)score;
+                entry.Depth = (byte)depth;
+                entry.Flag = flag;
+                entry.BestMove = TTEntry.EncodeMove(bestMove);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool Probe(ulong hash, int depth, int alpha, int beta, int ply, out int score, out Move ttMove)
         {
             int index = (int)(hash & _mask);
-            ref TTEntry entry = ref _table[index];
-
-            score = 0;
-            ttMove = default;
-
-            if (entry.Hash != hash)
-                return false;
-
-            ttMove = TTEntry.DecodeMove(entry.BestMove);
-
-            if (entry.Depth < depth)
-                return false;
-
-            // Adjust mate scores for retrieval
-            int ttScore = entry.Score;
-            if (ttScore > MateThreshold)
-                ttScore -= ply;
-            else if (ttScore < -MateThreshold)
-                ttScore += ply;
-
-            switch (entry.Flag)
+            object bucketLock = _locks[index & LockMask];
+            lock (bucketLock)
             {
-                case TTFlag.Exact:
-                    score = ttScore;
-                    return true;
-                case TTFlag.Alpha when ttScore <= alpha:
-                    score = alpha;
-                    return true;
-                case TTFlag.Beta when ttScore >= beta:
-                    score = beta;
-                    return true;
-            }
+                ref TTEntry entry = ref _table[index];
 
-            return false;
+                score = 0;
+                ttMove = default;
+
+                if (entry.Hash != hash)
+                    return false;
+
+                ttMove = TTEntry.DecodeMove(entry.BestMove);
+
+                if (entry.Depth < depth)
+                    return false;
+
+                // Adjust mate scores for retrieval
+                int ttScore = entry.Score;
+                if (ttScore > MateThreshold)
+                    ttScore -= ply;
+                else if (ttScore < -MateThreshold)
+                    ttScore += ply;
+
+                switch (entry.Flag)
+                {
+                    case TTFlag.Exact:
+                        score = ttScore;
+                        return true;
+                    case TTFlag.Alpha when ttScore <= alpha:
+                        score = alpha;
+                        return true;
+                    case TTFlag.Beta when ttScore >= beta:
+                        score = beta;
+                        return true;
+                }
+
+                return false;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Move GetTTMove(ulong hash)
         {
             int index = (int)(hash & _mask);
-            ref TTEntry entry = ref _table[index];
-            return entry.Hash == hash ? TTEntry.DecodeMove(entry.BestMove) : default;
+            object bucketLock = _locks[index & LockMask];
+            lock (bucketLock)
+            {
+                ref TTEntry entry = ref _table[index];
+                return entry.Hash == hash ? TTEntry.DecodeMove(entry.BestMove) : default;
+            }
         }
 
         /// <summary>
@@ -139,21 +174,25 @@ namespace ChessEngine
         public bool ProbeForSingular(ulong hash, int depth, out int score, out TTFlag flag)
         {
             int index = (int)(hash & _mask);
-            ref TTEntry entry = ref _table[index];
+            object bucketLock = _locks[index & LockMask];
+            lock (bucketLock)
+            {
+                ref TTEntry entry = ref _table[index];
 
-            score = 0;
-            flag = TTFlag.None;
+                score = 0;
+                flag = TTFlag.None;
 
-            if (entry.Hash != hash)
-                return false;
+                if (entry.Hash != hash)
+                    return false;
 
-            // Need sufficient depth for singular extension
-            if (entry.Depth < depth - 3)
-                return false;
+                // Need sufficient depth for singular extension
+                if (entry.Depth < depth - 3)
+                    return false;
 
-            score = entry.Score;
-            flag = entry.Flag;
-            return true;
+                score = entry.Score;
+                flag = entry.Flag;
+                return true;
+            }
         }
 
         /// <summary>
