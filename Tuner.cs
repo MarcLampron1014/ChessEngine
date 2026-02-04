@@ -502,6 +502,16 @@ namespace ChessEngine
                 TuneParameter(positions, () => p.RookBehindPasserBonus, v => p.RookBehindPasserBonus = v, "RookBehindPasserBonus");
                 TuneParameter(positions, () => p.KnightOutpostBonusMG, v => p.KnightOutpostBonusMG = v, "KnightOutpostBonusMG");
                 TuneParameter(positions, () => p.KnightOutpostBonusEG, v => p.KnightOutpostBonusEG = v, "KnightOutpostBonusEG");
+                TuneParameter(positions, () => p.RookOnSeventhBonusMG, v => p.RookOnSeventhBonusMG = v, "RookOnSeventhBonusMG");
+                TuneParameter(positions, () => p.RookOnSeventhBonusEG, v => p.RookOnSeventhBonusEG = v, "RookOnSeventhBonusEG");
+                TuneParameter(positions, () => p.RookOnSeventhWithKingBonus, v => p.RookOnSeventhWithKingBonus = v, "RookOnSeventhWithKingBonus");
+                TuneParameter(positions, () => p.KingAttackWeightPenalty, v => p.KingAttackWeightPenalty = v, "KingAttackWeightPenalty");
+                TuneParameter(positions, () => p.BackwardPawnPenaltyMG, v => p.BackwardPawnPenaltyMG = v, "BackwardPawnPenaltyMG");
+                TuneParameter(positions, () => p.BackwardPawnPenaltyEG, v => p.BackwardPawnPenaltyEG = v, "BackwardPawnPenaltyEG");
+                TuneParameter(positions, () => p.SpaceBonusMG, v => p.SpaceBonusMG = v, "SpaceBonusMG");
+                TuneParameter(positions, () => p.BadBishopPenalty, v => p.BadBishopPenalty = v, "BadBishopPenalty");
+                TuneParameter(positions, () => p.BishopLongDiagonalBonus, v => p.BishopLongDiagonalBonus = v, "BishopLongDiagonalBonus");
+                TuneParameter(positions, () => p.QueenTropismBonus, v => p.QueenTropismBonus = v, "QueenTropismBonus");
 
                 // Tune endgame weights
                 TuneParameter(positions, () => p.KingOwnPasserProximity, v => p.KingOwnPasserProximity = v, "KingOwnPasserProximity");
@@ -551,6 +561,12 @@ namespace ChessEngine
             Console.WriteLine($"King Shield: {p.KingShieldBonus}");
             Console.WriteLine($"King Open File Penalty: {p.KingOpenFilePenalty}");
             Console.WriteLine($"Knight Outpost: MG={p.KnightOutpostBonusMG} EG={p.KnightOutpostBonusEG}");
+            Console.WriteLine($"Rook on 7th: MG={p.RookOnSeventhBonusMG} EG={p.RookOnSeventhBonusEG} WithKing={p.RookOnSeventhWithKingBonus}");
+            Console.WriteLine($"King Attack Weight Penalty: {p.KingAttackWeightPenalty}");
+            Console.WriteLine($"Backward Pawn: MG={p.BackwardPawnPenaltyMG} EG={p.BackwardPawnPenaltyEG}");
+            Console.WriteLine($"Space Bonus MG: {p.SpaceBonusMG}");
+            Console.WriteLine($"Bad Bishop Penalty: {p.BadBishopPenalty} Bishop Long Diagonal: {p.BishopLongDiagonalBonus}");
+            Console.WriteLine($"Queen Tropism: {p.QueenTropismBonus}");
         }
 
         /// <summary>

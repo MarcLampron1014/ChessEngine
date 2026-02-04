@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 
 namespace ChessEngine
 {
@@ -99,10 +100,33 @@ namespace ChessEngine
                 return;
             }
 
+            if (args.Length > 0 && args[0] == "lichess")
+            {
+                var token = LichessBot.LoadToken();
+                if (string.IsNullOrEmpty(token))
+                {
+                    Console.Error.WriteLine("Lichess token not found. Set LICHESS_BOT_TOKEN or create lichess_token.txt (see lichess_token.example.txt).");
+                    Environment.Exit(1);
+                }
+                LichessBot.Run(token);
+                return;
+            }
+
             // Load eval params from file if exists
             if (File.Exists("eval_params.json"))
             {
                 EvalParams.LoadFromFile("eval_params.json");
+                // #region agent log
+                try
+                {
+                    var logPath = @"c:\Users\marcl\ChessEngine\.cursor\debug.log";
+                    Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+                    var p = EvalParams.Instance;
+                    var line = JsonSerializer.Serialize(new { sessionId = "debug-session", runId = "post-fix", hypothesisId = "H1", location = "Program.cs:118", message = "params after load", data = new { TotalPhase = p.TotalPhase, PawnValueEG = p.PawnValueEG, PawnValueMG = p.PawnValueMG, PawnPstMGLength = p.PawnPstMG?.Length ?? -1 }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }) + "\n";
+                    File.AppendAllText(logPath, line);
+                }
+                catch { }
+                // #endregion
             }
 
             Uci.Run();

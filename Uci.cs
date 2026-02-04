@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 
 namespace ChessEngine
 {
@@ -11,6 +12,8 @@ namespace ChessEngine
         private const int DefaultHashSizeMB = 64;
 
         private static readonly TimeManager _timeManager = new TimeManager();
+        private static Thread? _searchThread;
+        private static Board? _goBoard;
 
         public static void Run()
         {
@@ -26,7 +29,8 @@ namespace ChessEngine
                 if (line.Length == 0) continue;
 
                 string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                string cmd = parts[0];
+                if (parts.Length == 0) continue;
+                string cmd = parts[0].ToLowerInvariant();
 
                 switch (cmd)
                 {
@@ -37,9 +41,19 @@ namespace ChessEngine
                         WriteLineFlush("uciok");
                         break;
                     case "isready":
+                        if (_searchThread?.IsAlive == true)
+                        {
+                            Search.RequestStop();
+                            _searchThread.Join(5000);
+                        }
                         WriteLineFlush("readyok");
                         break;
                     case "ucinewgame":
+                        if (_searchThread?.IsAlive == true)
+                        {
+                            Search.RequestStop();
+                            _searchThread.Join(5000);
+                        }
                         board = new Board();
                         Search.ClearHash();
                         Evaluator.ClearCache();
@@ -48,12 +62,30 @@ namespace ChessEngine
                         HandleSetOption(parts);
                         break;
                     case "position":
+                        if (_searchThread?.IsAlive == true)
+                        {
+                            Search.RequestStop();
+                            _searchThread.Join(5000);
+                        }
                         HandlePosition(board, parts);
                         break;
                     case "go":
+                        if (_searchThread?.IsAlive == true)
+                        {
+                            Search.RequestStop();
+                            _searchThread.Join(5000);
+                        }
                         HandleGo(board, parts);
                         break;
+                    case "stop":
+                        Search.RequestStop();
+                        if (_searchThread?.IsAlive == true)
+                            _searchThread.Join(10000);
+                        break;
                     case "quit":
+                        Search.RequestStop();
+                        if (_searchThread?.IsAlive == true)
+                            _searchThread.Join(2000);
                         return;
                 }
             }
@@ -121,33 +153,86 @@ namespace ChessEngine
         private static void HandleGo(Board board, string[] parts)
         {
             int movetime = -1, wtime = -1, btime = -1, winc = 0, binc = 0, movestogo = 0;
+            bool infinite = false;
 
             for (int i = 1; i < parts.Length; i++)
             {
-                if (i + 1 >= parts.Length) continue;
-
-                string t = parts[i];
-                if (t == "movetime" && TryParseInt(parts[i + 1], out int mt)) { movetime = mt; i++; }
-                else if (t == "wtime" && TryParseInt(parts[i + 1], out int wt)) { wtime = wt; i++; }
-                else if (t == "btime" && TryParseInt(parts[i + 1], out int bt)) { btime = bt; i++; }
-                else if (t == "winc" && TryParseInt(parts[i + 1], out int wi)) { winc = wi; i++; }
-                else if (t == "binc" && TryParseInt(parts[i + 1], out int bi)) { binc = bi; i++; }
-                else if (t == "movestogo" && TryParseInt(parts[i + 1], out int mtg)) { movestogo = mtg; i++; }
+                if (i + 1 < parts.Length)
+                {
+                    string t = parts[i].ToLowerInvariant();
+                    if (t == "movetime" && TryParseInt(parts[i + 1], out int mt)) { movetime = mt; i++; }
+                    else if (t == "wtime" && TryParseInt(parts[i + 1], out int wt)) { wtime = wt; i++; }
+                    else if (t == "btime" && TryParseInt(parts[i + 1], out int bt)) { btime = bt; i++; }
+                    else if (t == "winc" && TryParseInt(parts[i + 1], out int wi)) { winc = wi; i++; }
+                    else if (t == "binc" && TryParseInt(parts[i + 1], out int bi)) { binc = bi; i++; }
+                    else if (t == "movestogo" && TryParseInt(parts[i + 1], out int mtg)) { movestogo = mtg; i++; }
+                }
+                if (parts[i].ToLowerInvariant() == "infinite")
+                    infinite = true;
             }
 
-            InitializeTimeManager(board, movetime, wtime, btime, winc, binc, movestogo);
-            var result = Search.FindBestMove(board, _timeManager, maxDepth: 64);
+            _goBoard = board;
+            InitializeTimeManager(board, movetime, wtime, btime, winc, binc, movestogo, infinite);
 
-            if (!result.BestMove.Equals(default(Move)))
-                board.MakeMove(result.BestMove);
+            _searchThread = new Thread(() =>
+            {
+                try
+                {
+                    var result = Search.FindBestMove(board, _timeManager, maxDepth: 64);
+                    SendBestMoveFromLastResult(board, result);
+                }
+                catch (Search.SearchTimeoutException)
+                {
+                    SendBestMoveFromLastResult(board, Search.GetLastResult());
+                }
+                catch (Exception)
+                {
+                    SendBestMoveFromLastResult(board, Search.GetLastResult());
+                }
+            });
+            _searchThread.IsBackground = true;
+            _searchThread.Start();
+        }
 
-            string best = result.BestMove.Equals(default(Move)) ? "0000" : result.BestMove.ToString();
-            WriteLineFlush($"bestmove {best}");
+        private static void SendBestMoveFromLastResult(Board? board, Search.SearchResult? result = null)
+        {
+            var r = result ?? Search.GetLastResult();
+            Move best = r.BestMove;
+
+            if (board != null)
+            {
+                var legal = MoveGenerator.GenerateLegalMoves(board);
+                if (legal.Count == 0)
+                {
+                    WriteLineFlush("bestmove 0000");
+                    return;
+                }
+                bool found = false;
+                foreach (var m in legal)
+                {
+                    if (m.From == best.From && m.To == best.To && m.Promotion == best.Promotion)
+                    {
+                        found = true;
+                        best = m;
+                        break;
+                    }
+                }
+                if (!found)
+                    best = legal[0];
+            }
+
+            string bestStr = best.From == best.To && best.Promotion == Piece.Empty ? "0000" : best.ToString();
+            WriteLineFlush($"bestmove {bestStr}");
         }
 
         private static void InitializeTimeManager(Board board, int movetime, int wtime, int btime,
-                                                   int winc, int binc, int movestogo)
+                                                   int winc, int binc, int movestogo, bool infinite = false)
         {
+            if (infinite)
+            {
+                _timeManager.InitializeFixedTime(300_000);
+                return;
+            }
             if (movetime > 0)
             {
                 _timeManager.InitializeFixedTime(movetime);

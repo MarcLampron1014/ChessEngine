@@ -71,6 +71,10 @@ project.assets.json
 appsettings.*.json
 .env
 
+# Lichess bot token (do not commit)
+lichess_token.txt
+!lichess_token.example.txt
+
 # Ignore compiled executables (optional, if publish artifacts shouldn't be tracked)
 *.exe
 *.dll

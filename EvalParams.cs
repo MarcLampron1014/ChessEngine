@@ -46,6 +46,28 @@ namespace ChessEngine
         public int KingOpenFilePenalty { get; set; } = 10;
         public int RookBehindPasserBonus { get; set; } = 30;
 
+        // Rook on 7th rank
+        public int RookOnSeventhBonusMG { get; set; } = 25;
+        public int RookOnSeventhBonusEG { get; set; } = 35;
+        public int RookOnSeventhWithKingBonus { get; set; } = 15;
+
+        // King safety attack weight (penalty per unit of attack weight over defense)
+        public int KingAttackWeightPenalty { get; set; } = 8;
+
+        // Backward pawn
+        public int BackwardPawnPenaltyMG { get; set; } = -12;
+        public int BackwardPawnPenaltyEG { get; set; } = -18;
+
+        // Space (middlegame)
+        public int SpaceBonusMG { get; set; } = 3;
+
+        // Bishop: good vs bad, long diagonal
+        public int BadBishopPenalty { get; set; } = -15;
+        public int BishopLongDiagonalBonus { get; set; } = 10;
+
+        // Queen tropism (distance to enemy king)
+        public int QueenTropismBonus { get; set; } = 2;
+
         // King-pawn proximity weights (endgame)
         public int KingOwnPasserProximity { get; set; } = 5;
         public int KingEnemyPasserProximity { get; set; } = 3;
@@ -217,6 +239,7 @@ namespace ChessEngine
 
         /// <summary>
         /// Loads parameters from a JSON file.
+        /// Piece values (Pawn/Knight/Bishop/Rook/Queen MG/EG) must be positive; tuned values can go negative, so we clamp to avoid inverted evaluation.
         /// </summary>
         public static void LoadFromFile(string path)
         {
@@ -225,8 +248,51 @@ namespace ChessEngine
                 string json = File.ReadAllText(path);
                 var loaded = JsonSerializer.Deserialize<EvalParams>(json);
                 if (loaded != null)
+                {
+                    ClampPieceValuesToPositive(loaded);
+                    EnsureValidPstAndPhase(loaded);
                     Instance = loaded;
+                }
             }
+        }
+
+        private static void ClampPieceValuesToPositive(EvalParams p)
+        {
+            p.PawnValueMG = Math.Max(1, p.PawnValueMG);
+            p.PawnValueEG = Math.Max(1, p.PawnValueEG);
+            p.KnightValueMG = Math.Max(1, p.KnightValueMG);
+            p.KnightValueEG = Math.Max(1, p.KnightValueEG);
+            p.BishopValueMG = Math.Max(1, p.BishopValueMG);
+            p.BishopValueEG = Math.Max(1, p.BishopValueEG);
+            p.RookValueMG = Math.Max(1, p.RookValueMG);
+            p.RookValueEG = Math.Max(1, p.RookValueEG);
+            p.QueenValueMG = Math.Max(1, p.QueenValueMG);
+            p.QueenValueEG = Math.Max(1, p.QueenValueEG);
+        }
+
+        /// <summary>
+        /// Ensures TotalPhase >= 1 and all PST arrays are non-null and length 64 after JSON load,
+        /// to prevent NullReferenceException, IndexOutOfRangeException, or DivideByZeroException in the engine subprocess.
+        /// </summary>
+        private static void EnsureValidPstAndPhase(EvalParams p)
+        {
+            p.TotalPhase = Math.Max(1, p.TotalPhase);
+            var def = new EvalParams();
+            if (p.PawnPstMG == null || p.PawnPstMG.Length != 64) p.PawnPstMG = (int[])def.PawnPstMG.Clone();
+            if (p.PawnPstEG == null || p.PawnPstEG.Length != 64) p.PawnPstEG = (int[])def.PawnPstEG.Clone();
+            if (p.KnightPstMG == null || p.KnightPstMG.Length != 64) p.KnightPstMG = (int[])def.KnightPstMG.Clone();
+            if (p.KnightPstEG == null || p.KnightPstEG.Length != 64) p.KnightPstEG = (int[])def.KnightPstEG.Clone();
+            if (p.BishopPstMG == null || p.BishopPstMG.Length != 64) p.BishopPstMG = (int[])def.BishopPstMG.Clone();
+            if (p.BishopPstEG == null || p.BishopPstEG.Length != 64) p.BishopPstEG = (int[])def.BishopPstEG.Clone();
+            if (p.RookPstMG == null || p.RookPstMG.Length != 64) p.RookPstMG = (int[])def.RookPstMG.Clone();
+            if (p.RookPstEG == null || p.RookPstEG.Length != 64) p.RookPstEG = (int[])def.RookPstEG.Clone();
+            if (p.QueenPstMG == null || p.QueenPstMG.Length != 64) p.QueenPstMG = (int[])def.QueenPstMG.Clone();
+            if (p.QueenPstEG == null || p.QueenPstEG.Length != 64) p.QueenPstEG = (int[])def.QueenPstEG.Clone();
+            if (p.KingPstMG == null || p.KingPstMG.Length != 64) p.KingPstMG = (int[])def.KingPstMG.Clone();
+            if (p.KingPstEG == null || p.KingPstEG.Length != 64) p.KingPstEG = (int[])def.KingPstEG.Clone();
+            if (p.PassedPawnBonusMG == null || p.PassedPawnBonusMG.Length != 8) p.PassedPawnBonusMG = (int[])def.PassedPawnBonusMG.Clone();
+            if (p.PassedPawnBonusEG == null || p.PassedPawnBonusEG.Length != 8) p.PassedPawnBonusEG = (int[])def.PassedPawnBonusEG.Clone();
+            if (p.ConnectedPasserBonusByRank == null || p.ConnectedPasserBonusByRank.Length != 8) p.ConnectedPasserBonusByRank = (int[])def.ConnectedPasserBonusByRank.Clone();
         }
 
         /// <summary>

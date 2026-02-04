@@ -1,5 +1,7 @@
 using System;
+using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 
 namespace ChessEngine
 {
@@ -45,6 +47,8 @@ namespace ChessEngine
 
         // Shorthand accessor for evaluation parameters
         private static EvalParams P => EvalParams.Instance;
+
+        private static int _evalLogCount;
 
         static Evaluator()
         {
@@ -139,6 +143,18 @@ namespace ChessEngine
         {
             ulong hash = board.ZobristHash;
 
+            // #region agent log
+            if (_evalLogCount < 2)
+            {
+                try
+                {
+                    var line = JsonSerializer.Serialize(new { sessionId = "debug-session", runId = "run1", hypothesisId = "H3", location = "Evaluator.cs:Evaluate", message = "PST check", data = new { PawnPstMGNull = P.PawnPstMG == null, PawnPstMGLen = P.PawnPstMG?.Length ?? -1 }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }) + "\n";
+                    File.AppendAllText(@"c:\Users\marcl\ChessEngine\.cursor\debug.log", line);
+                }
+                catch { }
+            }
+            // #endregion
+
             // Probe eval cache
             if (ProbeEvalCache(hash, out int cachedScore))
                 return cachedScore;
@@ -162,14 +178,23 @@ namespace ChessEngine
             // Rook on open/semi-open files
             EvaluateRooks(board, ref mgScore, ref egScore);
 
+            // Rook on 7th rank
+            EvaluateRookOnSeventh(board, ref mgScore, ref egScore);
+
             // Mobility
             EvaluateMobility(board, ref mgScore, ref egScore);
 
             // Knight outposts
             EvaluateOutposts(board, ref mgScore, ref egScore);
 
+            // Queen tropism (distance to enemy king)
+            EvaluateQueenTropism(board, ref mgScore, ref egScore);
+
             // King safety (middlegame only)
             EvaluateKingSafety(board, ref mgScore);
+
+            // Space (middlegame only)
+            EvaluateSpace(board, ref mgScore, phase);
 
             // Endgame-specific evaluations (reuse passed pawns computed above)
             EvaluateEndgame(board, ref egScore, phase, wPassedPawns, bPassedPawns);
@@ -179,6 +204,19 @@ namespace ChessEngine
 
             // Return from perspective of side to move
             int finalScore = board.WhiteToMove ? score : -score;
+
+            // #region agent log
+            if (_evalLogCount < 5)
+            {
+                try
+                {
+                    _evalLogCount++;
+                    var line = JsonSerializer.Serialize(new { sessionId = "debug-session", runId = "run1", hypothesisId = "H2_H4", location = "Evaluator.cs:Evaluate", message = "eval exit", data = new { phase, TotalPhase = P.TotalPhase, mgScore, egScore, score, finalScore, whiteToMove = board.WhiteToMove }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }) + "\n";
+                    File.AppendAllText(@"c:\Users\marcl\ChessEngine\.cursor\debug.log", line);
+                }
+                catch { }
+            }
+            // #endregion
 
             // Store in eval cache
             StoreEvalCache(hash, finalScore);
@@ -341,6 +379,24 @@ namespace ChessEngine
                     egScore += sign * P.IsolatedPawnPenaltyEG;
                 }
 
+                // Backward pawn: no friendly pawn behind on adjacent files, and can be attacked by enemy pawn
+                ulong behindMask = 0;
+                if (white)
+                {
+                    for (int r = 0; r < rank; r++) behindMask |= Bitboard.RankMasks[r];
+                }
+                else
+                {
+                    for (int r = rank + 1; r <= 7; r++) behindMask |= Bitboard.RankMasks[r];
+                }
+                bool hasFriendlyBehind = (friendlyPawns & adjacentFiles & behindMask) != 0;
+                bool canBeAttackedByEnemyPawn = (enemyPawns & Bitboard.PawnAttacks[white ? 0 : 1][sq]) != 0;
+                if (!hasFriendlyBehind && canBeAttackedByEnemyPawn)
+                {
+                    mgScore += sign * P.BackwardPawnPenaltyMG;
+                    egScore += sign * P.BackwardPawnPenaltyEG;
+                }
+
                 // Passed pawn check
                 ulong passedMask = GetPassedPawnMask(sq, white);
                 if ((enemyPawns & passedMask) == 0)
@@ -406,6 +462,67 @@ namespace ChessEngine
                 mgScore -= P.BishopPairBonusMG;
                 egScore -= P.BishopPairBonusEG;
             }
+
+            EvaluateBishopsQuality(board, ref mgScore, ref egScore);
+        }
+
+        private static void EvaluateBishopsQuality(Board board, ref int mgScore, ref int egScore)
+        {
+            ulong wBishops = board.WB;
+            while (wBishops != 0)
+            {
+                int sq = Bitboard.PopLsb(ref wBishops);
+                bool onLongDiagonal = IsOnLongDiagonal(sq);
+                if (onLongDiagonal)
+                {
+                    mgScore += P.BishopLongDiagonalBonus;
+                    egScore += P.BishopLongDiagonalBonus;
+                }
+                int sameColorPawns = CountSameColorPawns(board.WP, sq, true);
+                if (sameColorPawns >= 2)
+                {
+                    mgScore += P.BadBishopPenalty;
+                    egScore += P.BadBishopPenalty;
+                }
+            }
+            ulong bBishops = board.BB;
+            while (bBishops != 0)
+            {
+                int sq = Bitboard.PopLsb(ref bBishops);
+                bool onLongDiagonal = IsOnLongDiagonal(sq);
+                if (onLongDiagonal)
+                {
+                    mgScore -= P.BishopLongDiagonalBonus;
+                    egScore -= P.BishopLongDiagonalBonus;
+                }
+                int sameColorPawns = CountSameColorPawns(board.BP, sq, false);
+                if (sameColorPawns >= 2)
+                {
+                    mgScore -= P.BadBishopPenalty;
+                    egScore -= P.BadBishopPenalty;
+                }
+            }
+        }
+
+        private static bool IsOnLongDiagonal(int sq)
+        {
+            int f = Bitboard.FileOf(sq);
+            int r = Bitboard.RankOf(sq);
+            return f == r || f + r == 7;
+        }
+
+        private static int CountSameColorPawns(ulong pawns, int bishopSq, bool whiteBishop)
+        {
+            bool bishopOnLight = ((Bitboard.FileOf(bishopSq) + Bitboard.RankOf(bishopSq)) & 1) == 0;
+            int count = 0;
+            while (pawns != 0)
+            {
+                int sq = Bitboard.PopLsb(ref pawns);
+                bool pawnOnLight = ((Bitboard.FileOf(sq) + Bitboard.RankOf(sq)) & 1) == 0;
+                if (pawnOnLight == bishopOnLight)
+                    count++;
+            }
+            return count;
         }
 
         private static void EvaluateRooks(Board board, ref int mgScore, ref int egScore)
@@ -449,6 +566,46 @@ namespace ChessEngine
                 {
                     mgScore -= P.RookSemiOpenFileBonusMG;
                     egScore -= P.RookSemiOpenFileBonusEG;
+                }
+            }
+        }
+
+        private static void EvaluateRookOnSeventh(Board board, ref int mgScore, ref int egScore)
+        {
+            const int WhiteSeventhRank = 6;
+            const int BlackSeventhRank = 1;
+
+            int bkSq = board.BK != 0 ? Bitboard.BitScanForward(board.BK) : -1;
+            int wkSq = board.WK != 0 ? Bitboard.BitScanForward(board.WK) : -1;
+            bool blackKingOnSeventh = bkSq >= 0 && Bitboard.RankOf(bkSq) == BlackSeventhRank;
+            bool whiteKingOnSeventh = wkSq >= 0 && Bitboard.RankOf(wkSq) == WhiteSeventhRank;
+
+            ulong whiteSeventh = Bitboard.RankMasks[WhiteSeventhRank];
+            ulong blackSeventh = Bitboard.RankMasks[BlackSeventhRank];
+
+            ulong wRooks = board.WR & whiteSeventh;
+            while (wRooks != 0)
+            {
+                int sq = Bitboard.PopLsb(ref wRooks);
+                mgScore += P.RookOnSeventhBonusMG;
+                egScore += P.RookOnSeventhBonusEG;
+                if (blackKingOnSeventh)
+                {
+                    mgScore += P.RookOnSeventhWithKingBonus;
+                    egScore += P.RookOnSeventhWithKingBonus;
+                }
+            }
+
+            ulong bRooks = board.BR & blackSeventh;
+            while (bRooks != 0)
+            {
+                int sq = Bitboard.PopLsb(ref bRooks);
+                mgScore -= P.RookOnSeventhBonusMG;
+                egScore -= P.RookOnSeventhBonusEG;
+                if (whiteKingOnSeventh)
+                {
+                    mgScore -= P.RookOnSeventhWithKingBonus;
+                    egScore -= P.RookOnSeventhWithKingBonus;
                 }
             }
         }
@@ -571,6 +728,33 @@ namespace ChessEngine
             }
         }
 
+        private static void EvaluateQueenTropism(Board board, ref int mgScore, ref int egScore)
+        {
+            if (board.WQ == 0 && board.BQ == 0) return;
+            int wkSq = board.WK != 0 ? Bitboard.BitScanForward(board.WK) : -1;
+            int bkSq = board.BK != 0 ? Bitboard.BitScanForward(board.BK) : -1;
+            if (wkSq < 0 || bkSq < 0) return;
+
+            int wTropism = 0;
+            ulong wQueens = board.WQ;
+            while (wQueens != 0)
+            {
+                int sq = Bitboard.PopLsb(ref wQueens);
+                int dist = ChebyshevDistance(sq, bkSq);
+                wTropism += Math.Max(0, 14 - dist);
+            }
+            int bTropism = 0;
+            ulong bQueens = board.BQ;
+            while (bQueens != 0)
+            {
+                int sq = Bitboard.PopLsb(ref bQueens);
+                int dist = ChebyshevDistance(sq, wkSq);
+                bTropism += Math.Max(0, 14 - dist);
+            }
+            mgScore += (wTropism - bTropism) * P.QueenTropismBonus;
+            egScore += (wTropism - bTropism) * P.QueenTropismBonus;
+        }
+
         private static void EvaluateKingSafety(Board board, ref int mgScore)
         {
             // Only evaluate king safety if queens are on the board
@@ -591,6 +775,28 @@ namespace ChessEngine
 
             int kingSq = Bitboard.BitScanForward(king);
             int kingFile = Bitboard.FileOf(kingSq);
+            int kingRank = Bitboard.RankOf(kingSq);
+
+            // King zone: king attacks + one rank in front
+            ulong zone = Bitboard.KingAttacks[kingSq];
+            if (white && kingRank > 0)
+            {
+                ulong frontRank = Bitboard.RankMasks[kingRank - 1];
+                ulong frontFiles = (kingFile > 0 ? Bitboard.FileMasks[kingFile - 1] : 0) | Bitboard.FileMasks[kingFile] | (kingFile < 7 ? Bitboard.FileMasks[kingFile + 1] : 0);
+                zone |= frontRank & frontFiles;
+            }
+            else if (!white && kingRank < 7)
+            {
+                ulong frontRank = Bitboard.RankMasks[kingRank + 1];
+                ulong frontFiles = (kingFile > 0 ? Bitboard.FileMasks[kingFile - 1] : 0) | Bitboard.FileMasks[kingFile] | (kingFile < 7 ? Bitboard.FileMasks[kingFile + 1] : 0);
+                zone |= frontRank & frontFiles;
+            }
+
+            // Attack weight: enemy pieces attacking zone, weighted (queen 2, rook 1, bishop 1, knight 1, pawn 1)
+            int attackWeight = CountAttackWeight(board, zone, !white);
+            int defenseWeight = CountAttackWeight(board, zone, white);
+            int netAttack = Math.Max(0, attackWeight - defenseWeight);
+            score -= netAttack * P.KingAttackWeightPenalty;
 
             // Pawn shield bonus
             ulong shieldMask = Bitboard.KingAttacks[kingSq];
@@ -611,6 +817,71 @@ namespace ChessEngine
             }
 
             return score;
+        }
+
+        private static int CountAttackWeight(Board board, ulong zone, bool byWhite)
+        {
+            int weight = 0;
+            ulong occupied = board.AllPieces;
+
+            ulong queens = byWhite ? board.WQ : board.BQ;
+            while (queens != 0)
+            {
+                int sq = Bitboard.PopLsb(ref queens);
+                ulong attacks = MagicBitboards.GetBishopAttacks(sq, occupied) | MagicBitboards.GetRookAttacks(sq, occupied);
+                if ((attacks & zone) != 0) weight += 2;
+            }
+            ulong rooks = byWhite ? board.WR : board.BR;
+            while (rooks != 0)
+            {
+                int sq = Bitboard.PopLsb(ref rooks);
+                if ((MagicBitboards.GetRookAttacks(sq, occupied) & zone) != 0) weight += 1;
+            }
+            ulong bishops = byWhite ? board.WB : board.BB;
+            while (bishops != 0)
+            {
+                int sq = Bitboard.PopLsb(ref bishops);
+                if ((MagicBitboards.GetBishopAttacks(sq, occupied) & zone) != 0) weight += 1;
+            }
+            ulong knights = byWhite ? board.WN : board.BN;
+            while (knights != 0)
+            {
+                int sq = Bitboard.PopLsb(ref knights);
+                if ((Bitboard.KnightAttacks[sq] & zone) != 0) weight += 1;
+            }
+            ulong pawns = byWhite ? board.WP : board.BP;
+            while (pawns != 0)
+            {
+                int sq = Bitboard.PopLsb(ref pawns);
+                if ((Bitboard.PawnAttacks[byWhite ? 1 : 0][sq] & zone) != 0) weight += 1;
+            }
+            return weight;
+        }
+
+        private static void EvaluateSpace(Board board, ref int mgScore, int phase)
+        {
+            if (phase < P.TotalPhase / 2) return;
+            ulong centralFiles = Bitboard.FileMasks[2] | Bitboard.FileMasks[3] | Bitboard.FileMasks[4] | Bitboard.FileMasks[5];
+            ulong whiteSpaceRanks = Bitboard.RankMasks[3] | Bitboard.RankMasks[4] | Bitboard.RankMasks[5];
+            ulong blackSpaceRanks = Bitboard.RankMasks[2] | Bitboard.RankMasks[3] | Bitboard.RankMasks[4];
+
+            int wSpace = 0;
+            ulong wPawns = board.WP;
+            while (wPawns != 0)
+            {
+                int sq = Bitboard.PopLsb(ref wPawns);
+                ulong controlled = Bitboard.PawnAttacks[1][sq];
+                wSpace += Bitboard.PopCount(controlled & centralFiles & whiteSpaceRanks);
+            }
+            int bSpace = 0;
+            ulong bPawns = board.BP;
+            while (bPawns != 0)
+            {
+                int sq = Bitboard.PopLsb(ref bPawns);
+                ulong controlled = Bitboard.PawnAttacks[0][sq];
+                bSpace += Bitboard.PopCount(controlled & centralFiles & blackSpaceRanks);
+            }
+            mgScore += (wSpace - bSpace) * P.SpaceBonusMG;
         }
 
         private static void EvaluateEndgame(Board board, ref int egScore, int phase, 

@@ -14,6 +14,11 @@ namespace ChessEngine
         private static TimeManager? _timeManager;
         private static Stopwatch? _sw;
         private static int _hardTimeLimit;
+        private static volatile bool _stopRequested;
+        private static SearchResult _lastResult;
+
+        public static void RequestStop() => _stopRequested = true;
+        public static SearchResult GetLastResult() => _lastResult;
 
         // Killer moves: 2 killers per ply
         private static readonly Move[,] _killerMoves = new Move[MaxPly, 2];
@@ -30,8 +35,8 @@ namespace ChessEngine
         // Previous move tracking for countermove heuristic
         private static Move _previousMove;
 
-        // Late Move Pruning thresholds by depth
-        private static readonly int[] LMPThresholds = { 0, 5, 8, 12, 18, 25, 33 };
+        // Late Move Pruning thresholds by depth (prune more late quiets)
+        private static readonly int[] LMPThresholds = { 0, 7, 11, 15, 22, 30, 40 };
 
         // Preallocated move arrays per ply to avoid allocations
         private static readonly Move[][] _moveStacks = new Move[MaxPly][];
@@ -43,7 +48,7 @@ namespace ChessEngine
                 _moveStacks[i] = new Move[256];
         }
 
-        private sealed class SearchTimeoutException : Exception { }
+        public sealed class SearchTimeoutException : Exception { }
 
         /// <summary>
         /// MovePicker generates moves in stages for optimal search efficiency.
@@ -379,80 +384,90 @@ namespace ChessEngine
             if (maxDepth <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxDepth));
 
-            _timeManager = timeManager;
-            _sw = Stopwatch.StartNew();
-            _hardTimeLimit = timeManager.MaxTimeMs;
-            ClearSearchTables();
-
-            List<Move> rootMoves = MoveGenerator.GenerateLegalMoves(board);
-            if (rootMoves.Count == 0)
-                return new SearchResult(default, 0, 0);
-
-            Move bestMoveOverall = rootMoves[0];
-            int bestScoreOverall = 0;
-            int depthReached = 0;
-
-            // Aspiration window parameters
-            int alpha = -Infinity;
-            int beta = Infinity;
-            const int AspirationDelta = 25;
-
-            for (int depth = 1; depth <= maxDepth; depth++)
+            string rootFen = Fen.Generate(board);
+            try
             {
-                try
+                _timeManager = timeManager;
+                _sw = Stopwatch.StartNew();
+                _hardTimeLimit = timeManager.MaxTimeMs;
+                _stopRequested = false;
+                ClearSearchTables();
+
+                List<Move> rootMoves = MoveGenerator.GenerateLegalMoves(board);
+                if (rootMoves.Count == 0)
+                    return new SearchResult(default, 0, 0);
+
+                Move bestMoveOverall = rootMoves[0];
+                int bestScoreOverall = 0;
+                int depthReached = 0;
+
+                // Aspiration window parameters
+                int alpha = -Infinity;
+                int beta = Infinity;
+                const int AspirationDelta = 25;
+
+                for (int depth = 1; depth <= maxDepth; depth++)
                 {
-                    int delta = AspirationDelta;
-
-                    // Use aspiration windows starting from depth 4
-                    if (depth >= 4)
+                    try
                     {
-                        alpha = bestScoreOverall - delta;
-                        beta = bestScoreOverall + delta;
-                    }
+                        int delta = AspirationDelta;
 
-                    while (true)
-                    {
-                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
+                        // Use aspiration windows starting from depth 4
+                        if (depth >= 4)
+                        {
+                            alpha = bestScoreOverall - delta;
+                            beta = bestScoreOverall + delta;
+                        }
 
-                        // Check for aspiration window fail
-                        if (bestScoreAtDepth <= alpha)
+                        while (true)
                         {
-                            // Fail low - widen alpha
-                            alpha = Math.Max(-Infinity, alpha - delta);
-                            delta *= 2;
+                            var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
+
+                            // Check for aspiration window fail
+                            if (bestScoreAtDepth <= alpha)
+                            {
+                                // Fail low - widen alpha
+                                alpha = Math.Max(-Infinity, alpha - delta);
+                                delta *= 2;
+                            }
+                            else if (bestScoreAtDepth >= beta)
+                            {
+                                // Fail high - widen beta
+                                beta = Math.Min(Infinity, beta + delta);
+                                delta *= 2;
+                            }
+                            else
+                            {
+                                // Score within window
+                                bestMoveOverall = bestMoveAtDepth;
+                                bestScoreOverall = bestScoreAtDepth;
+                                depthReached = depth;
+                                break;
+                            }
                         }
-                        else if (bestScoreAtDepth >= beta)
-                        {
-                            // Fail high - widen beta
-                            beta = Math.Min(Infinity, beta + delta);
-                            delta *= 2;
-                        }
-                        else
-                        {
-                            // Score within window
-                            bestMoveOverall = bestMoveAtDepth;
-                            bestScoreOverall = bestScoreAtDepth;
-                            depthReached = depth;
+
+                        _lastResult = new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
+                        SendUciInfo(depth, bestScoreOverall, bestMoveOverall, _nodeCount, _sw.ElapsedMilliseconds);
+
+                        timeManager.OnIterationComplete(depth, bestScoreOverall);
+
+                        if (timeManager.ShouldStop(_sw.ElapsedMilliseconds))
                             break;
-                        }
                     }
-
-                    // Output UCI info after each completed iteration
-                    SendUciInfo(depth, bestScoreOverall, bestMoveOverall, _nodeCount, _sw.ElapsedMilliseconds);
-
-                    timeManager.OnIterationComplete(depth, bestScoreOverall);
-
-                    if (timeManager.ShouldStop(_sw.ElapsedMilliseconds))
+                    catch (SearchTimeoutException)
+                    {
                         break;
+                    }
                 }
-                catch (SearchTimeoutException)
-                {
-                    break;
-                }
-            }
 
-            _timeManager = null;
-            return new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
+                _timeManager = null;
+                _lastResult = new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
+                return _lastResult;
+            }
+            finally
+            {
+                Fen.Load(board, rootFen);
+            }
         }
 
         public static SearchResult FindBestMove(Board board, int timeMs, int maxDepth = 64)
@@ -462,70 +477,77 @@ namespace ChessEngine
             if (maxDepth <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxDepth));
 
-            _timeManager = null;
-            _sw = Stopwatch.StartNew();
-            _hardTimeLimit = timeMs;
-            ClearSearchTables();
-
-            List<Move> rootMoves = MoveGenerator.GenerateLegalMoves(board);
-            if (rootMoves.Count == 0)
-                return new SearchResult(default, 0, 0);
-
-            Move bestMoveOverall = rootMoves[0];
-            int bestScoreOverall = 0;
-            int depthReached = 0;
-
-            // Aspiration window parameters
-            int alpha = -Infinity;
-            int beta = Infinity;
-            const int AspirationDelta = 25;
-
-            for (int depth = 1; depth <= maxDepth; depth++)
+            string rootFen = Fen.Generate(board);
+            try
             {
-                try
+                _timeManager = null;
+                _sw = Stopwatch.StartNew();
+                _hardTimeLimit = timeMs;
+                _stopRequested = false;
+                ClearSearchTables();
+
+                List<Move> rootMoves = MoveGenerator.GenerateLegalMoves(board);
+                if (rootMoves.Count == 0)
+                    return new SearchResult(default, 0, 0);
+
+                Move bestMoveOverall = rootMoves[0];
+                int bestScoreOverall = 0;
+                int depthReached = 0;
+
+                int alpha = -Infinity;
+                int beta = Infinity;
+                const int AspirationDelta = 25;
+
+                for (int depth = 1; depth <= maxDepth; depth++)
                 {
-                    int delta = AspirationDelta;
-
-                    // Use aspiration windows starting from depth 4
-                    if (depth >= 4)
+                    try
                     {
-                        alpha = bestScoreOverall - delta;
-                        beta = bestScoreOverall + delta;
-                    }
+                        int delta = AspirationDelta;
+                        if (depth >= 4)
+                        {
+                            alpha = bestScoreOverall - delta;
+                            beta = bestScoreOverall + delta;
+                        }
 
-                    while (true)
+                        while (true)
+                        {
+                            var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
+
+                            if (bestScoreAtDepth <= alpha)
+                            {
+                                alpha = Math.Max(-Infinity, alpha - delta);
+                                delta *= 2;
+                            }
+                            else if (bestScoreAtDepth >= beta)
+                            {
+                                beta = Math.Min(Infinity, beta + delta);
+                                delta *= 2;
+                            }
+                            else
+                            {
+                                bestMoveOverall = bestMoveAtDepth;
+                                bestScoreOverall = bestScoreAtDepth;
+                                depthReached = depth;
+                                break;
+                            }
+                        }
+
+                        _lastResult = new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
+                        SendUciInfo(depth, bestScoreOverall, bestMoveOverall, _nodeCount, _sw.ElapsedMilliseconds);
+                    }
+                    catch (SearchTimeoutException)
                     {
-                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
-
-                        if (bestScoreAtDepth <= alpha)
-                        {
-                            alpha = Math.Max(-Infinity, alpha - delta);
-                            delta *= 2;
-                        }
-                        else if (bestScoreAtDepth >= beta)
-                        {
-                            beta = Math.Min(Infinity, beta + delta);
-                            delta *= 2;
-                        }
-                        else
-                        {
-                            bestMoveOverall = bestMoveAtDepth;
-                            bestScoreOverall = bestScoreAtDepth;
-                            depthReached = depth;
-                            break;
-                        }
+                        break;
                     }
+                }
 
-                    // Output UCI info after each completed iteration
-                    SendUciInfo(depth, bestScoreOverall, bestMoveOverall, _nodeCount, _sw.ElapsedMilliseconds);
-                }
-                catch (SearchTimeoutException)
-                {
-                    break;
-                }
+                _lastResult = new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
+                return _lastResult;
             }
-
-            return new SearchResult(bestMoveOverall, bestScoreOverall, depthReached);
+            finally
+            {
+                Fen.Load(board, rootFen);
+            }
         }
 
         private static (Move bestMove, int bestScore) SearchRoot(Board board, int depth, int alpha, int beta)
@@ -615,13 +637,16 @@ namespace ChessEngine
             if (_tt.Probe(board.ZobristHash, depth, alpha, beta, ply, out int ttScore, out Move ttMove))
                 return ttScore;
 
-            // Static evaluation for pruning decisions
-            int staticEval = Evaluator.Evaluate(board);
+            int razorMargin = 300 + 200 * depth;
+            int rfpMargin = 120 * depth;
+            int quickEval = Evaluator.QuickEvaluate(board);
+            bool mightRazor = !isPV && !inCheck && depth <= 2 && quickEval + razorMargin < alpha;
+            int rfpMarginForEval = depth <= 3 ? rfpMargin : 150 * depth;
+            bool mightRFP = !inCheck && !isPV && depth <= 4 && quickEval - rfpMarginForEval >= beta;
+            int staticEval = (mightRazor || mightRFP) ? Evaluator.Evaluate(board) : quickEval;
 
-            // Razoring: at low depth, if we're far below alpha, drop into qsearch
             if (!isPV && !inCheck && depth <= 2)
             {
-                int razorMargin = 300 + 200 * depth;
                 if (staticEval + razorMargin < alpha)
                 {
                     int qScore = Quiesce(board, alpha, beta, ply);
@@ -630,21 +655,22 @@ namespace ChessEngine
                 }
             }
 
-            // Reverse Futility Pruning (Static Null Move Pruning)
-            if (!inCheck && !isPV && depth <= 3)
+            // RFP: extend to depth 4 with margin (150 cp per ply at depth 4)
+            if (!inCheck && !isPV && depth <= 4)
             {
-                int rfpMargin = 120 * depth;
-                if (staticEval - rfpMargin >= beta)
+                int rfpMarginD = depth <= 3 ? rfpMargin : 150 * depth;
+                if (staticEval - rfpMarginD >= beta)
                     return staticEval;
             }
 
             // Null move pruning with variable R
             if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board))
             {
-                // Variable R based on depth and eval
                 int R = 3 + depth / 6;
                 if (staticEval - beta > 200) R++; // More aggressive when winning
+                if (staticEval - beta > 400) R--; // Reduce R when far ahead (zugzwang risk in endgame)
                 R = Math.Min(R, depth - 1);
+                R = Math.Max(R, 1);
 
                 board.MakeNullMove();
                 int nullScore = -AlphaBeta(board, depth - R, -beta, -beta + 1, ply + 1, true);
@@ -662,109 +688,82 @@ namespace ChessEngine
                 ttMove = _tt.GetTTMove(board.ZobristHash);
             }
 
-            Move[] moves = _moveStacks[ply];
-            int moveCount = MoveGenerator.GenerateLegalMoves(board, moves);
-            if (moveCount == 0)
-            {
-                return inCheck ? -MateScore + ply : 0;
-            }
-
-            OrderMoves(board, moves, moveCount, ttMove, ply);
-
             // Singular extension: if the TT move is significantly better than alternatives
             int singularExtension = 0;
             bool singularSearchInProgress = excludeMove.From != excludeMove.To;
             
             if (!singularSearchInProgress && depth >= 8 && ttMove.From != ttMove.To && !inCheck)
             {
-                // Check if we have a valid TT entry for singular extension
                 if (_tt.ProbeForSingular(board.ZobristHash, depth, out int ttEntryScore, out TTFlag ttFlag))
                 {
-                    if (ttFlag != TTFlag.Alpha) // Not a fail-low entry
+                    if (ttFlag != TTFlag.Alpha)
                     {
                         int singularBeta = ttEntryScore - 3 * depth;
                         int singularScore = AlphaBeta(board, depth / 2, singularBeta - 1, singularBeta, ply, false, ttMove);
-                        
                         if (singularScore < singularBeta)
-                            singularExtension = 1; // TT move is singular, extend its search
+                            singularExtension = 1;
                     }
                 }
             }
 
             int originalAlpha = alpha;
-            Move bestMove = moves[0];
+            Move bestMove = default;
             int movesSearched = 0;
 
-            // Futility pruning margins
-            int[] futilityMargins = { 0, 200, 400, 600 };
-            bool canFutilityPrune = !inCheck && !isPV && depth <= 3 && staticEval + futilityMargins[depth] < alpha;
+            // Futility: depth <= 4 with larger margin at depth 4 (200 cp per ply)
+            int[] futilityMargins = { 0, 200, 400, 600, 1000 };
+            bool canFutilityPrune = !inCheck && !isPV && depth <= 4 && depth < futilityMargins.Length && staticEval + futilityMargins[depth] < alpha;
 
-            // Store previous move for countermove updates
             Move prevMove = _previousMove;
+            var picker = new MovePicker(board, _moveStacks[ply], ttMove, ply);
 
-            for (int i = 0; i < moveCount; i++)
+            while (picker.NextMove(out Move move, out _))
             {
-                Move move = moves[i];
-                
-                // Skip the excluded move (for singular extension search)
                 if (singularSearchInProgress && MovesEqual(move, excludeMove))
                     continue;
 
                 bool isQuiet = !move.IsCapture && !move.IsPromotion;
                 bool isTTMove = MovesEqual(move, ttMove);
 
-                // Late Move Pruning (LMP): skip late quiet moves entirely at low depth
                 if (!isPV && !inCheck && depth <= 6 && movesSearched > 0 && isQuiet)
                 {
                     if (depth < LMPThresholds.Length && movesSearched >= LMPThresholds[depth])
                         continue;
                 }
 
-                // Futility Pruning: skip quiet moves that can't possibly raise alpha
                 if (canFutilityPrune && movesSearched > 0 && isQuiet)
-                {
                     continue;
-                }
 
-                // SEE pruning for captures at low depth
-                if (depth <= 2 && move.IsCapture && !move.IsPromotion && movesSearched > 0)
+                if (move.IsCapture && !move.IsPromotion && movesSearched > 0)
                 {
-                    int seeScore = SEE(board, move);
-                    if (seeScore < 0)
-                        continue;
+                    if (depth <= 2 || (!isPV && !inCheck && depth <= 3))
+                    {
+                        if (SEE(board, move) < 0)
+                            continue;
+                    }
                 }
 
                 _previousMove = move;
                 board.MakeMove(move);
 
-                int score;
-                // Apply singular extension to TT move
                 int extension = (isTTMove && singularExtension > 0) ? singularExtension : 0;
                 int newDepth = depth - 1 + extension;
 
-                // Late Move Reductions (LMR)
                 int reduction = 0;
                 if (depth >= 3 && movesSearched >= 4 && isQuiet && !inCheck)
                 {
-                    reduction = 1 + (depth / 4) + (movesSearched / 8);
+                    reduction = 1 + (depth / 3) + (movesSearched / 8);
                     reduction = Math.Min(reduction, depth - 2);
                 }
 
-                // PVS: search first move with full window, rest with null window
+                int score;
                 if (movesSearched == 0)
-                {
                     score = -AlphaBeta(board, newDepth, -beta, -alpha, ply + 1, false);
-                }
                 else
                 {
-                    // Reduced depth null window search
                     score = -AlphaBeta(board, newDepth - reduction, -alpha - 1, -alpha, ply + 1, false);
-
-                    // Re-search at full depth if reduced search fails high
                     if (reduction > 0 && score > alpha)
                         score = -AlphaBeta(board, newDepth, -alpha - 1, -alpha, ply + 1, false);
-
-                    // Re-search with full window if null window fails high
                     if (score > alpha && score < beta)
                         score = -AlphaBeta(board, newDepth, -beta, -alpha, ply + 1, false);
                 }
@@ -775,8 +774,6 @@ namespace ChessEngine
                 if (score >= beta)
                 {
                     _tt.Store(board.ZobristHash, depth, beta, TTFlag.Beta, move, ply);
-
-                    // Store killer move if quiet
                     if (isQuiet && ply < MaxPly)
                     {
                         if (!MovesEqual(_killerMoves[ply, 0], move))
@@ -785,16 +782,12 @@ namespace ChessEngine
                             _killerMoves[ply, 0] = move;
                         }
                     }
-
-                    // Update countermove heuristic
                     if (prevMove.From != prevMove.To && isQuiet)
                     {
                         Piece prevPiece = board.PieceAt(prevMove.To);
                         if (prevPiece != Piece.Empty)
                             _counterMoves[(int)prevPiece, prevMove.To] = move;
                     }
-
-                    // Update history for quiet moves
                     if (isQuiet)
                     {
                         Piece piece = board.PieceAt(move.From);
@@ -802,7 +795,6 @@ namespace ChessEngine
                             piece = board.PieceAt(move.To);
                         _historyTable[(int)piece, move.To] += depth * depth;
                     }
-
                     _previousMove = prevMove;
                     return beta;
                 }
@@ -811,8 +803,6 @@ namespace ChessEngine
                 {
                     alpha = score;
                     bestMove = move;
-
-                    // Update history for quiet moves that improve alpha
                     if (isQuiet)
                     {
                         Piece piece = board.PieceAt(move.From);
@@ -824,6 +814,8 @@ namespace ChessEngine
             }
 
             _previousMove = prevMove;
+            if (movesSearched == 0)
+                return inCheck ? -MateScore + ply : 0;
             TTFlag flag = alpha > originalAlpha ? TTFlag.Exact : TTFlag.Alpha;
             _tt.Store(board.ZobristHash, depth, alpha, flag, bestMove, ply);
             return alpha;
@@ -1051,6 +1043,8 @@ namespace ChessEngine
 
             if (_sw == null)
                 return;
+            if (_stopRequested)
+                throw new SearchTimeoutException();
 
             long elapsed = _sw.ElapsedMilliseconds;
             if (_timeManager != null)
