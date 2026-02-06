@@ -42,8 +42,8 @@ namespace ChessEngine
         // Node counter for time check optimization and UCI info (shared, atomic)
         private static long _nodeCount;
 
-        // Late Move Pruning thresholds by depth (prune more late quiets)
-        private static readonly int[] LMPThresholds = { 0, 7, 11, 15, 22, 30, 40 };
+        // Late Move Pruning thresholds by depth (reduced pruning for accuracy)
+        private static readonly int[] LMPThresholds = { 0, 16, 24, 32, 48, 64, 80 };
 
         // Shared best result for multi-threaded search
         private static readonly object _resultLock = new object();
@@ -787,48 +787,18 @@ namespace ChessEngine
             if (_tt.Probe(board.ZobristHash, depth, alpha, beta, ply, out int ttScore, out Move ttMove))
                 return ttScore;
 
-            int razorMargin = 300 + 200 * depth;
-            int rfpMargin = 120 * depth;
             int quickEval = Evaluator.QuickEvaluate(board);
-            bool mightRazor = !isPV && !inCheck && depth <= 2 && quickEval + razorMargin < alpha;
-            int rfpMarginForEval = depth <= 3 ? rfpMargin : 150 * depth;
-            bool mightRFP = !inCheck && !isPV && depth <= 4 && quickEval - rfpMarginForEval >= beta;
-            // Use full eval for null move and futility when depth >= 3 to avoid wrong cutoffs
-            int staticEval = (mightRazor || mightRFP || depth >= 3) ? Evaluator.Evaluate(board) : quickEval;
+            // Use full eval when depth >= 3 for null move and futility decisions
+            int staticEval = depth >= 3 ? Evaluator.Evaluate(board) : quickEval;
 
-            // Winning extension: at root only, in endgame with decisive advantage, extend once
-            const int WinningExtensionPhaseThreshold = 8;
-            const int WinningExtensionEvalThreshold = 150;
-            if (!inCheck && ply == 0 && depth >= 4 && board.Phase <= WinningExtensionPhaseThreshold && staticEval >= WinningExtensionEvalThreshold)
-                depth++;
-
-            // When losing by more than this we don't razor/prune so we search for a hold
+            // When losing by more than this we don't prune so we search for a hold
             const int LosingMargin = 200;
 
-            // Razor: when not losing badly, try quiesce cutoff; when losing we search all moves to find a hold
-            if (!isPV && !inCheck && depth <= 2 && staticEval >= alpha - LosingMargin)
-            {
-                if (staticEval + razorMargin < alpha)
-                {
-                    int qScore = Quiesce(board, alpha, beta, ply);
-                    if (qScore < alpha)
-                        return qScore;
-                }
-            }
+            // Razor and RFP disabled for evaluation accuracy
 
-            // RFP: only at depth <= 2 (pre-frontier) to reduce wrong cutoffs from static eval
-            if (!inCheck && !isPV && depth <= 2)
-            {
-                int rfpMarginD = depth <= 3 ? rfpMargin : 150 * depth;
-                if (staticEval - rfpMarginD >= beta)
-                    return staticEval;
-            }
-
-            // Null move pruning with variable R (skip in endgame where zugzwang is common)
-            // Disable when phase <= 6 and we're winning to avoid missing slow zugzwang wins
-            // Disable when we're losing so we actually search our defensive moves
+            // Null move pruning: restricted to depth >= 5 and phase >= 12 for safety
             bool allowNullMove = (board.Phase > 6 || staticEval - beta <= 100) && (staticEval >= alpha - 100);
-            if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board) && board.Phase >= 6 && allowNullMove)
+            if (!isNullMove && !inCheck && depth >= 5 && HasNonPawnMaterial(board) && board.Phase >= 12 && allowNullMove)
             {
                 int R = 3 + depth / 6;
                 if (staticEval - beta > 200) R++; // More aggressive when winning
@@ -841,8 +811,20 @@ namespace ChessEngine
                 board.UndoNullMove();
 
                 if (nullScore >= beta)
+                {
+                    // In endgame, verify null move cutoff to avoid zugzwang false positives
+                    if (board.Phase <= 10 && depth >= 4)
+                    {
+                        board.MakeNullMove();
+                        int verifyScore = -AlphaBeta(board, depth - 2, -beta, -alpha, ply + 1, true);
+                        board.UndoNullMove();
+                        if (verifyScore < beta)
+                            goto SkipNullMoveCutoff;
+                    }
                     return beta;
+                }
             }
+            SkipNullMoveCutoff:
 
             // Internal Iterative Deepening (IID)
             // If we don't have a TT move at high depth, do a shallow search first
@@ -852,23 +834,9 @@ namespace ChessEngine
                 ttMove = _tt.GetTTMove(board.ZobristHash);
             }
 
-            // Singular extension: if the TT move is significantly better than alternatives
+            // Singular extension disabled for evaluation accuracy
             int singularExtension = 0;
             bool singularSearchInProgress = excludeMove.From != excludeMove.To;
-            
-            if (!singularSearchInProgress && depth >= 8 && ttMove.From != ttMove.To && !inCheck)
-            {
-                if (_tt.ProbeForSingular(board.ZobristHash, depth, out int ttEntryScore, out TTFlag ttFlag))
-                {
-                    if (ttFlag != TTFlag.Alpha)
-                    {
-                        int singularBeta = ttEntryScore - 3 * depth;
-                        int singularScore = AlphaBeta(board, depth / 2, singularBeta - 1, singularBeta, ply, false, ttMove);
-                        if (singularScore < singularBeta)
-                            singularExtension = 1;
-                    }
-                }
-            }
 
             int originalAlpha = alpha;
             Move bestMove = default;
@@ -881,8 +849,8 @@ namespace ChessEngine
             // Losing: we need to find a hold (draw/defense), so don't over-prune
             bool losing = staticEval < alpha - LosingMargin;
 
-            // Futility: depth <= 4 with larger margin at depth 4 (200 cp per ply); skip when losing so we don't prune the saving move
-            int[] futilityMargins = { 0, 200, 400, 600, 1000 };
+            // Futility: increased margins for accuracy; skip when losing so we don't prune the saving move
+            int[] futilityMargins = { 0, 300, 600, 900, 1400 };
             bool canFutilityPrune = !inCheck && !isPV && !losing && depth <= 4 && depth < futilityMargins.Length && staticEval + futilityMargins[depth] < alpha;
 
             Move prevMove = PreviousMove;
@@ -906,26 +874,28 @@ namespace ChessEngine
                 if (canFutilityPrune && movesSearched > 0 && isQuiet)
                     continue;
 
-                if (move.IsCapture && !move.IsPromotion && movesSearched > 0)
+                // SEE pruning: restrict to depth 1 only for accuracy
+                if (move.IsCapture && !move.IsPromotion && movesSearched > 0 && depth <= 1)
                 {
-                    if (depth <= 2 || (!isPV && !inCheck && depth <= 3))
-                    {
-                        if (SEE(board, move) < 0)
-                            continue;
-                    }
+                    if (SEE(board, move) < 0)
+                        continue;
                 }
+
+                int extension = (isTTMove && singularExtension > 0) ? singularExtension : 0;
+                bool isRecapture = prevMove.From != prevMove.To && prevMove.IsCapture && move.IsCapture && move.To == prevMove.To;
+                if (isRecapture) extension++;
+                if (extension == 0 && move.IsCapture && !move.IsPromotion && depth >= 4 && SEE(board, move) >= 0) extension++;
+                int newDepth = depth - 1 + extension;
 
                 PreviousMove = move;
                 board.MakeMove(move);
 
-                int extension = (isTTMove && singularExtension > 0) ? singularExtension : 0;
-                int newDepth = depth - 1 + extension;
-
+                // LMR: reduced aggressiveness - require depth >= 5, after 10 moves, smaller reduction
                 int reduction = 0;
-                if (depth >= 3 && movesSearched >= 4 && isQuiet && !inCheck && !improving && !losing)
+                if (depth >= 5 && movesSearched >= 10 && isQuiet && !inCheck && !improving && !losing)
                 {
-                    reduction = 1 + (depth / 3) + (movesSearched / 8);
-                    reduction = Math.Min(reduction, depth - 2);
+                    reduction = 1 + (depth / 6) + (movesSearched / 16);
+                    reduction = Math.Min(reduction, depth / 3);
                 }
 
                 int score;
@@ -1163,7 +1133,7 @@ namespace ChessEngine
             if (noisyCount > 0)
                 OrderMoves(board, captureMoves, noisyCount, default, qPly2);
 
-            const int DeltaMargin = 200;
+            const int DeltaMargin = 350;
 
             for (int i = 0; i < noisyCount; i++)
             {
@@ -1181,11 +1151,11 @@ namespace ChessEngine
                         continue;
                 }
 
-                // SEE pruning: only skip clearly bad captures (margin 100 cp) to allow small sacrifices
+                // SEE pruning: loosened for accuracy - only skip clearly bad captures
                 if (move.IsCapture && !move.IsPromotion)
                 {
                     int seeScore = SEE(board, move);
-                    if (seeScore < -100)
+                    if (seeScore < -150)
                         continue;
                 }
 

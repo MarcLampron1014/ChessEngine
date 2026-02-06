@@ -10,7 +10,7 @@ namespace ChessEngine
         private const string EngineName = "ChessEngine";
         private const string EngineAuthor = "marcl";
         private const int DefaultHashSizeMB = 64;
-        private const int DefaultThreads = 4;
+        private const int DefaultThreads = 8;
 
         private static readonly TimeManager _timeManager = new TimeManager();
         private static Thread? _searchThread;
@@ -42,6 +42,9 @@ namespace ChessEngine
                         WriteLineFlush($"id author {EngineAuthor}");
                         WriteLineFlush($"option name Hash type spin default {DefaultHashSizeMB} min 1 max 1024");
                         WriteLineFlush($"option name Threads type spin default {DefaultThreads} min 1 max 512");
+                        WriteLineFlush($"option name BookFile type string default {OpeningBook.BookPath}");
+                        WriteLineFlush("option name BookDepth type spin default 36 min 0 max 60");
+                        WriteLineFlush("option name BookEvalLimit type spin default -40 min -1000 max 100");
                         WriteLineFlush("uciok");
                         break;
                     case "isready":
@@ -121,7 +124,7 @@ namespace ChessEngine
                 return;
 
             string optionName = parts[nameIdx];
-            string optionValue = parts[valueIdx];
+            string optionValue = valueIdx < parts.Length ? string.Join(" ", parts, valueIdx, parts.Length - valueIdx) : "";
 
             if (optionName.Equals("Hash", StringComparison.OrdinalIgnoreCase) &&
                 TryParseInt(optionValue, out int sizeMB))
@@ -132,6 +135,20 @@ namespace ChessEngine
                 TryParseInt(optionValue, out int threads))
             {
                 _numThreads = Math.Max(1, Math.Min(512, threads));
+            }
+            else if (optionName.Equals("BookFile", StringComparison.OrdinalIgnoreCase))
+            {
+                OpeningBook.BookPath = optionValue;
+            }
+            else if (optionName.Equals("BookDepth", StringComparison.OrdinalIgnoreCase) &&
+                TryParseInt(optionValue, out int bookDepth))
+            {
+                OpeningBook.BookDepth = bookDepth;
+            }
+            else if (optionName.Equals("BookEvalLimit", StringComparison.OrdinalIgnoreCase) &&
+                TryParseInt(optionValue, out int bookEvalLimit))
+            {
+                OpeningBook.BookEvalLimit = bookEvalLimit;
             }
         }
 
@@ -196,6 +213,16 @@ namespace ChessEngine
             _goBoard = board;
             InitializeTimeManager(board, movetime, wtime, btime, winc, binc, movestogo, infinite);
 
+            // Try opening book before search
+            int plyCount = (board.FullMoveNumber - 1) * 2 + (board.WhiteToMove ? 0 : 1);
+            int staticEval = Evaluator.Evaluate(board);
+            var bookMove = OpeningBook.TryGetMove(board, plyCount, staticEval);
+            if (bookMove.HasValue)
+            {
+                SendBookMove(board, bookMove.Value);
+                return;
+            }
+
             _searchThread = new Thread(() =>
             {
                 try
@@ -217,6 +244,12 @@ namespace ChessEngine
             });
             _searchThread.IsBackground = true;
             _searchThread.Start();
+        }
+
+        private static void SendBookMove(Board board, Move move)
+        {
+            string bestStr = move.From == move.To && move.Promotion == Piece.Empty ? "0000" : move.ToString();
+            WriteLineFlush($"bestmove {bestStr}");
         }
 
         private static void SendBestMoveFromLastResult(Board? board, Search.SearchResult? result = null)

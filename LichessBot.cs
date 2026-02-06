@@ -212,6 +212,7 @@ namespace ChessEngine
                 string? status = null;
                 bool weArePondering = false;
                 string? expectedPonderMove = null;
+                string? lastMovesWeSentFor = null;
 
                 var streamUrl = $"/api/bot/game/stream/{gameId}";
                 using var request = new HttpRequestMessage(HttpMethod.Get, streamUrl);
@@ -262,6 +263,13 @@ namespace ChessEngine
 
                         if (ourTurn && lineHadPositionUpdate)
                         {
+                            var movesTrimmed = moves.Trim();
+                            if (lastMovesWeSentFor != null && movesTrimmed == lastMovesWeSentFor)
+                            {
+                                Console.WriteLine("Lichess: skipping duplicate state, already sent move for this position");
+                                continue;
+                            }
+
                             string? bestMove;
                             string? ponderMove;
 
@@ -324,6 +332,8 @@ namespace ChessEngine
                             var moveOk = await SendMoveAsync(client, gameId, bestMove);
                             if (!moveOk)
                                 break;
+
+                            lastMovesWeSentFor = movesTrimmed;
 
                             if (!string.IsNullOrEmpty(ponderMove) && ponderMove != "(none)" && ponderMove != "0000")
                             {

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace ChessEngine
 {
@@ -27,21 +28,15 @@ namespace ChessEngine
         public int RookValueEG { get; set; } = 550;
         public int QueenValueEG { get; set; } = 950;
 
-        // Bonuses/penalties
+        // Bonuses/penalties (consolidated for stability: single value, phase taper handles MG/EG blend)
         public int BishopPairBonusMG { get; set; } = 30;
         public int BishopPairBonusEG { get; set; } = 50;
-        public int RookOpenFileBonusMG { get; set; } = 20;
-        public int RookOpenFileBonusEG { get; set; } = 15;
-        public int RookSemiOpenFileBonusMG { get; set; } = 10;
-        public int RookSemiOpenFileBonusEG { get; set; } = 8;
-        public int DoubledPawnPenaltyMG { get; set; } = -10;
-        public int DoubledPawnPenaltyEG { get; set; } = -20;
-        public int IsolatedPawnPenaltyMG { get; set; } = -15;
-        public int IsolatedPawnPenaltyEG { get; set; } = -25;
-        public int MobilityBonusMG { get; set; } = 3;
-        public int MobilityBonusEG { get; set; } = 2;
-        public int QueenMobilityBonusMG { get; set; } = 1;
-        public int QueenMobilityBonusEG { get; set; } = 2;
+        public int RookOpenFileBonus { get; set; } = 18;
+        public int RookSemiOpenFileBonus { get; set; } = 9;
+        public int DoubledPawnPenalty { get; set; } = -15;
+        public int IsolatedPawnPenalty { get; set; } = -20;
+        public int BackwardPawnPenalty { get; set; } = -15;
+        public int MobilityBonus { get; set; } = 2;
         public int KingShieldBonus { get; set; } = 10;
         public int KingOpenFilePenalty { get; set; } = 10;
         public int RookBehindPasserBonus { get; set; } = 30;
@@ -53,10 +48,6 @@ namespace ChessEngine
 
         // King safety attack weight (penalty per unit of attack weight over defense)
         public int KingAttackWeightPenalty { get; set; } = 8;
-
-        // Backward pawn
-        public int BackwardPawnPenaltyMG { get; set; } = -12;
-        public int BackwardPawnPenaltyEG { get; set; } = -18;
 
         // Space (middlegame)
         public int SpaceBonusMG { get; set; } = 3;
@@ -79,6 +70,63 @@ namespace ChessEngine
         // Knight outpost bonus
         public int KnightOutpostBonusMG { get; set; } = 20;
         public int KnightOutpostBonusEG { get; set; } = 15;
+
+        // Legacy properties for JSON backward compatibility (not written when saving)
+        [JsonPropertyName("DoubledPawnPenaltyMG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int DoubledPawnPenaltyMG { get; set; }
+
+        [JsonPropertyName("DoubledPawnPenaltyEG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int DoubledPawnPenaltyEG { get; set; }
+
+        [JsonPropertyName("IsolatedPawnPenaltyMG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int IsolatedPawnPenaltyMG { get; set; }
+
+        [JsonPropertyName("IsolatedPawnPenaltyEG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int IsolatedPawnPenaltyEG { get; set; }
+
+        [JsonPropertyName("BackwardPawnPenaltyMG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int BackwardPawnPenaltyMG { get; set; }
+
+        [JsonPropertyName("BackwardPawnPenaltyEG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int BackwardPawnPenaltyEG { get; set; }
+
+        [JsonPropertyName("RookOpenFileBonusMG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int RookOpenFileBonusMG { get; set; }
+
+        [JsonPropertyName("RookOpenFileBonusEG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int RookOpenFileBonusEG { get; set; }
+
+        [JsonPropertyName("RookSemiOpenFileBonusMG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int RookSemiOpenFileBonusMG { get; set; }
+
+        [JsonPropertyName("RookSemiOpenFileBonusEG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int RookSemiOpenFileBonusEG { get; set; }
+
+        [JsonPropertyName("MobilityBonusMG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int MobilityBonusMG { get; set; }
+
+        [JsonPropertyName("MobilityBonusEG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int MobilityBonusEG { get; set; }
+
+        [JsonPropertyName("QueenMobilityBonusMG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int QueenMobilityBonusMG { get; set; }
+
+        [JsonPropertyName("QueenMobilityBonusEG")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int QueenMobilityBonusEG { get; set; }
 
         // Piece-Square Tables (64 entries each)
         public int[] PawnPstMG { get; set; } = new int[]
@@ -237,9 +285,17 @@ namespace ChessEngine
         /// </summary>
         public static EvalParams Instance { get; private set; } = new EvalParams();
 
+        // Parameter bounds for stable, predictable evaluation
+        private const int PawnValueMin = 80, PawnValueMax = 120;
+        private const int KnightValueMin = 280, KnightValueMax = 360;
+        private const int BishopValueMin = 280, BishopValueMax = 360;
+        private const int RookValueMin = 480, RookValueMax = 550;
+        private const int QueenValueMin = 880, QueenValueMax = 980;
+        private const int BonusPenaltyMin = -50, BonusPenaltyMax = 50;
+
         /// <summary>
         /// Loads parameters from a JSON file.
-        /// Piece values (Pawn/Knight/Bishop/Rook/Queen MG/EG) must be positive; tuned values can go negative, so we clamp to avoid inverted evaluation.
+        /// All parameters are clamped to reasonable bounds for stable, predictable evaluation.
         /// </summary>
         public static void LoadFromFile(string path)
         {
@@ -249,25 +305,74 @@ namespace ChessEngine
                 var loaded = JsonSerializer.Deserialize<EvalParams>(json);
                 if (loaded != null)
                 {
-                    ClampPieceValuesToPositive(loaded);
+                    MigrateLegacyParameters(loaded);
+                    ClampAllParameters(loaded);
                     EnsureValidPstAndPhase(loaded);
                     Instance = loaded;
                 }
             }
         }
 
-        private static void ClampPieceValuesToPositive(EvalParams p)
+        /// <summary>
+        /// Migrates legacy MG/EG split parameters to consolidated single values when loading old JSON.
+        /// </summary>
+        private static void MigrateLegacyParameters(EvalParams p)
         {
-            p.PawnValueMG = Math.Max(1, p.PawnValueMG);
-            p.PawnValueEG = Math.Max(1, p.PawnValueEG);
-            p.KnightValueMG = Math.Max(1, p.KnightValueMG);
-            p.KnightValueEG = Math.Max(1, p.KnightValueEG);
-            p.BishopValueMG = Math.Max(1, p.BishopValueMG);
-            p.BishopValueEG = Math.Max(1, p.BishopValueEG);
-            p.RookValueMG = Math.Max(1, p.RookValueMG);
-            p.RookValueEG = Math.Max(1, p.RookValueEG);
-            p.QueenValueMG = Math.Max(1, p.QueenValueMG);
-            p.QueenValueEG = Math.Max(1, p.QueenValueEG);
+            if (p.DoubledPawnPenaltyMG != 0 || p.DoubledPawnPenaltyEG != 0)
+                p.DoubledPawnPenalty = (p.DoubledPawnPenaltyMG + p.DoubledPawnPenaltyEG) / 2;
+            if (p.IsolatedPawnPenaltyMG != 0 || p.IsolatedPawnPenaltyEG != 0)
+                p.IsolatedPawnPenalty = (p.IsolatedPawnPenaltyMG + p.IsolatedPawnPenaltyEG) / 2;
+            if (p.BackwardPawnPenaltyMG != 0 || p.BackwardPawnPenaltyEG != 0)
+                p.BackwardPawnPenalty = (p.BackwardPawnPenaltyMG + p.BackwardPawnPenaltyEG) / 2;
+            if (p.RookOpenFileBonusMG != 0 || p.RookOpenFileBonusEG != 0)
+                p.RookOpenFileBonus = (p.RookOpenFileBonusMG + p.RookOpenFileBonusEG) / 2;
+            if (p.RookSemiOpenFileBonusMG != 0 || p.RookSemiOpenFileBonusEG != 0)
+                p.RookSemiOpenFileBonus = (p.RookSemiOpenFileBonusMG + p.RookSemiOpenFileBonusEG) / 2;
+            if (p.MobilityBonusMG != 0 || p.MobilityBonusEG != 0 || p.QueenMobilityBonusMG != 0 || p.QueenMobilityBonusEG != 0)
+                p.MobilityBonus = (p.MobilityBonusMG + p.MobilityBonusEG + p.QueenMobilityBonusMG + p.QueenMobilityBonusEG) / 4;
+        }
+
+        /// <summary>
+        /// Clamps all parameters to reasonable bounds. Used by LoadFromFile and Tuner.
+        /// </summary>
+        public static void ClampAllParameters(EvalParams p)
+        {
+            p.PawnValueMG = Math.Clamp(p.PawnValueMG, PawnValueMin, PawnValueMax);
+            p.PawnValueEG = Math.Clamp(p.PawnValueEG, PawnValueMin, PawnValueMax);
+            p.KnightValueMG = Math.Clamp(p.KnightValueMG, KnightValueMin, KnightValueMax);
+            p.KnightValueEG = Math.Clamp(p.KnightValueEG, KnightValueMin, KnightValueMax);
+            p.BishopValueMG = Math.Clamp(p.BishopValueMG, BishopValueMin, BishopValueMax);
+            p.BishopValueEG = Math.Clamp(p.BishopValueEG, BishopValueMin, BishopValueMax);
+            p.RookValueMG = Math.Clamp(p.RookValueMG, RookValueMin, RookValueMax);
+            p.RookValueEG = Math.Clamp(p.RookValueEG, RookValueMin, RookValueMax);
+            p.QueenValueMG = Math.Clamp(p.QueenValueMG, QueenValueMin, QueenValueMax);
+            p.QueenValueEG = Math.Clamp(p.QueenValueEG, QueenValueMin, QueenValueMax);
+
+            p.BishopPairBonusMG = Math.Clamp(p.BishopPairBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.BishopPairBonusEG = Math.Clamp(p.BishopPairBonusEG, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOpenFileBonus = Math.Clamp(p.RookOpenFileBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookSemiOpenFileBonus = Math.Clamp(p.RookSemiOpenFileBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.DoubledPawnPenalty = Math.Clamp(p.DoubledPawnPenalty, BonusPenaltyMin, 0);
+            p.IsolatedPawnPenalty = Math.Clamp(p.IsolatedPawnPenalty, BonusPenaltyMin, 0);
+            p.BackwardPawnPenalty = Math.Clamp(p.BackwardPawnPenalty, BonusPenaltyMin, 0);
+            p.MobilityBonus = Math.Clamp(p.MobilityBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingShieldBonus = Math.Clamp(p.KingShieldBonus, 0, BonusPenaltyMax);
+            p.KingOpenFilePenalty = Math.Clamp(p.KingOpenFilePenalty, 0, BonusPenaltyMax);
+            p.RookBehindPasserBonus = Math.Clamp(p.RookBehindPasserBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOnSeventhBonusMG = Math.Clamp(p.RookOnSeventhBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOnSeventhBonusEG = Math.Clamp(p.RookOnSeventhBonusEG, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOnSeventhWithKingBonus = Math.Clamp(p.RookOnSeventhWithKingBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingAttackWeightPenalty = Math.Clamp(p.KingAttackWeightPenalty, 0, BonusPenaltyMax);
+            p.SpaceBonusMG = Math.Clamp(p.SpaceBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.BadBishopPenalty = Math.Clamp(p.BadBishopPenalty, BonusPenaltyMin, 0);
+            p.BishopLongDiagonalBonus = Math.Clamp(p.BishopLongDiagonalBonus, 0, BonusPenaltyMax);
+            p.QueenTropismBonus = Math.Clamp(p.QueenTropismBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingOwnPasserProximity = Math.Clamp(p.KingOwnPasserProximity, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingEnemyPasserProximity = Math.Clamp(p.KingEnemyPasserProximity, BonusPenaltyMin, BonusPenaltyMax);
+            p.MopUpCenterDistanceWeight = Math.Clamp(p.MopUpCenterDistanceWeight, 0, BonusPenaltyMax);
+            p.MopUpKingProximityWeight = Math.Clamp(p.MopUpKingProximityWeight, 0, BonusPenaltyMax);
+            p.KnightOutpostBonusMG = Math.Clamp(p.KnightOutpostBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.KnightOutpostBonusEG = Math.Clamp(p.KnightOutpostBonusEG, BonusPenaltyMin, BonusPenaltyMax);
         }
 
         /// <summary>

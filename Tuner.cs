@@ -30,6 +30,9 @@ namespace ChessEngine
         // Convergence threshold
         private const double ConvergenceThreshold = 1e-6;
 
+        /// <summary>L2 regularization strength (0 = disabled). Penalizes deviation from defaults to reduce overfitting.</summary>
+        public static double L2RegularizationStrength { get; set; } = 0.0;
+
         /// <summary>Default subset size for fast parameter steps (use full set if null or >= count).</summary>
         public const int DefaultTuneSubsetSize = 50_000;
 
@@ -457,23 +460,23 @@ namespace ChessEngine
 
         /// <summary>
         /// Tunes a single integer parameter using local search with adaptive step (greedy line search).
-        /// Returns the new optimal value.
+        /// Returns the new optimal value. Optional L2 regularization penalizes deviation from defaultValue.
         /// </summary>
         public static int TuneParameter(List<TuningPosition> positions,
-            Func<int> getter, Action<int> setter, string name, int step = 1)
+            Func<int> getter, Action<int> setter, string name, int step = 1, int defaultValue = 0)
         {
             int current = getter();
-            double currentError = ComputeErrorParallel(positions);
+            double currentError = ComputeErrorParallel(positions) + RegularizationPenalty(current, defaultValue);
 
             // Try increasing
             setter(current + step);
             Evaluator.ClearCache();
-            double errorPlus = ComputeErrorParallel(positions);
+            double errorPlus = ComputeErrorParallel(positions) + RegularizationPenalty(getter(), defaultValue);
 
             // Try decreasing
             setter(current - step);
             Evaluator.ClearCache();
-            double errorMinus = ComputeErrorParallel(positions);
+            double errorMinus = ComputeErrorParallel(positions) + RegularizationPenalty(getter(), defaultValue);
 
             const int maxExtraSteps = 3;
 
@@ -489,7 +492,7 @@ namespace ChessEngine
                     int nextVal = getter() + step;
                     setter(nextVal);
                     Evaluator.ClearCache();
-                    double err = ComputeErrorParallel(positions);
+                    double err = ComputeErrorParallel(positions) + RegularizationPenalty(getter(), defaultValue);
                     if (err < bestErr) { bestErr = err; bestVal = nextVal; }
                     else { setter(bestVal); Evaluator.ClearCache(); break; }
                 }
@@ -508,7 +511,7 @@ namespace ChessEngine
                     int nextVal = getter() - step;
                     setter(nextVal);
                     Evaluator.ClearCache();
-                    double err = ComputeErrorParallel(positions);
+                    double err = ComputeErrorParallel(positions) + RegularizationPenalty(getter(), defaultValue);
                     if (err < bestErr) { bestErr = err; bestVal = nextVal; }
                     else { setter(bestVal); Evaluator.ClearCache(); break; }
                 }
@@ -524,10 +527,10 @@ namespace ChessEngine
                 if (halfStep < 1) return current;
                 setter(current + halfStep);
                 Evaluator.ClearCache();
-                double errPlusHalf = ComputeErrorParallel(positions);
+                double errPlusHalf = ComputeErrorParallel(positions) + RegularizationPenalty(getter(), defaultValue);
                 setter(current - halfStep);
                 Evaluator.ClearCache();
-                double errMinusHalf = ComputeErrorParallel(positions);
+                double errMinusHalf = ComputeErrorParallel(positions) + RegularizationPenalty(getter(), defaultValue);
                 if (errPlusHalf < currentError && errPlusHalf <= errMinusHalf)
                 {
                     setter(current + halfStep);
@@ -552,58 +555,48 @@ namespace ChessEngine
             }
         }
 
-        private static List<(string name, Func<int> getter, Action<int> setter, int step)> BuildParameterActions(EvalParams p)
+        /// <summary>
+        /// Builds parameter list for tuning. Excludes volatile/low-signal params (RookBehindPasserBonus,
+        /// KingAttackWeightPenalty, MopUp*, SpaceBonusMG, QueenTropismBonus, KnightOutpostBonus) for stability.
+        /// Uses consolidated params (single DoubledPawnPenalty, MobilityBonus, etc.).
+        /// </summary>
+        private static List<(string name, Func<int> getter, Action<int> setter, int step, int defaultValue)> BuildParameterActions(EvalParams p)
         {
-            var list = new List<(string, Func<int>, Action<int>, int)>
+            var def = new EvalParams();
+            var list = new List<(string, Func<int>, Action<int>, int, int)>
             {
-                ("PawnValueMG", () => p.PawnValueMG, v => p.PawnValueMG = v, 5),
-                ("KnightValueMG", () => p.KnightValueMG, v => p.KnightValueMG = v, 5),
-                ("BishopValueMG", () => p.BishopValueMG, v => p.BishopValueMG = v, 5),
-                ("RookValueMG", () => p.RookValueMG, v => p.RookValueMG = v, 5),
-                ("QueenValueMG", () => p.QueenValueMG, v => p.QueenValueMG = v, 10),
-                ("PawnValueEG", () => p.PawnValueEG, v => p.PawnValueEG = v, 5),
-                ("KnightValueEG", () => p.KnightValueEG, v => p.KnightValueEG = v, 5),
-                ("BishopValueEG", () => p.BishopValueEG, v => p.BishopValueEG = v, 5),
-                ("RookValueEG", () => p.RookValueEG, v => p.RookValueEG = v, 5),
-                ("QueenValueEG", () => p.QueenValueEG, v => p.QueenValueEG = v, 10),
-                ("BishopPairBonusMG", () => p.BishopPairBonusMG, v => p.BishopPairBonusMG = v, 1),
-                ("BishopPairBonusEG", () => p.BishopPairBonusEG, v => p.BishopPairBonusEG = v, 1),
-                ("RookOpenFileBonusMG", () => p.RookOpenFileBonusMG, v => p.RookOpenFileBonusMG = v, 1),
-                ("RookOpenFileBonusEG", () => p.RookOpenFileBonusEG, v => p.RookOpenFileBonusEG = v, 1),
-                ("RookSemiOpenFileBonusMG", () => p.RookSemiOpenFileBonusMG, v => p.RookSemiOpenFileBonusMG = v, 1),
-                ("RookSemiOpenFileBonusEG", () => p.RookSemiOpenFileBonusEG, v => p.RookSemiOpenFileBonusEG = v, 1),
-                ("DoubledPawnPenaltyMG", () => p.DoubledPawnPenaltyMG, v => p.DoubledPawnPenaltyMG = v, 1),
-                ("DoubledPawnPenaltyEG", () => p.DoubledPawnPenaltyEG, v => p.DoubledPawnPenaltyEG = v, 1),
-                ("IsolatedPawnPenaltyMG", () => p.IsolatedPawnPenaltyMG, v => p.IsolatedPawnPenaltyMG = v, 1),
-                ("IsolatedPawnPenaltyEG", () => p.IsolatedPawnPenaltyEG, v => p.IsolatedPawnPenaltyEG = v, 1),
-                ("MobilityBonusMG", () => p.MobilityBonusMG, v => p.MobilityBonusMG = v, 1),
-                ("MobilityBonusEG", () => p.MobilityBonusEG, v => p.MobilityBonusEG = v, 1),
-                ("QueenMobilityBonusMG", () => p.QueenMobilityBonusMG, v => p.QueenMobilityBonusMG = v, 1),
-                ("QueenMobilityBonusEG", () => p.QueenMobilityBonusEG, v => p.QueenMobilityBonusEG = v, 1),
-                ("KingShieldBonus", () => p.KingShieldBonus, v => p.KingShieldBonus = v, 1),
-                ("KingOpenFilePenalty", () => p.KingOpenFilePenalty, v => p.KingOpenFilePenalty = v, 1),
-                ("RookBehindPasserBonus", () => p.RookBehindPasserBonus, v => p.RookBehindPasserBonus = v, 1),
-                ("KnightOutpostBonusMG", () => p.KnightOutpostBonusMG, v => p.KnightOutpostBonusMG = v, 1),
-                ("KnightOutpostBonusEG", () => p.KnightOutpostBonusEG, v => p.KnightOutpostBonusEG = v, 1),
-                ("RookOnSeventhBonusMG", () => p.RookOnSeventhBonusMG, v => p.RookOnSeventhBonusMG = v, 1),
-                ("RookOnSeventhBonusEG", () => p.RookOnSeventhBonusEG, v => p.RookOnSeventhBonusEG = v, 1),
-                ("RookOnSeventhWithKingBonus", () => p.RookOnSeventhWithKingBonus, v => p.RookOnSeventhWithKingBonus = v, 1),
-                ("KingAttackWeightPenalty", () => p.KingAttackWeightPenalty, v => p.KingAttackWeightPenalty = v, 1),
-                ("BackwardPawnPenaltyMG", () => p.BackwardPawnPenaltyMG, v => p.BackwardPawnPenaltyMG = v, 1),
-                ("BackwardPawnPenaltyEG", () => p.BackwardPawnPenaltyEG, v => p.BackwardPawnPenaltyEG = v, 1),
-                ("SpaceBonusMG", () => p.SpaceBonusMG, v => p.SpaceBonusMG = v, 1),
-                ("BadBishopPenalty", () => p.BadBishopPenalty, v => p.BadBishopPenalty = v, 1),
-                ("BishopLongDiagonalBonus", () => p.BishopLongDiagonalBonus, v => p.BishopLongDiagonalBonus = v, 1),
-                ("QueenTropismBonus", () => p.QueenTropismBonus, v => p.QueenTropismBonus = v, 1),
-                ("KingOwnPasserProximity", () => p.KingOwnPasserProximity, v => p.KingOwnPasserProximity = v, 1),
-                ("KingEnemyPasserProximity", () => p.KingEnemyPasserProximity, v => p.KingEnemyPasserProximity = v, 1),
-                ("MopUpCenterDistanceWeight", () => p.MopUpCenterDistanceWeight, v => p.MopUpCenterDistanceWeight = v, 1),
-                ("MopUpKingProximityWeight", () => p.MopUpKingProximityWeight, v => p.MopUpKingProximityWeight = v, 1)
+                ("PawnValueMG", () => p.PawnValueMG, v => { p.PawnValueMG = v; EvalParams.ClampAllParameters(p); }, 5, def.PawnValueMG),
+                ("KnightValueMG", () => p.KnightValueMG, v => { p.KnightValueMG = v; EvalParams.ClampAllParameters(p); }, 5, def.KnightValueMG),
+                ("BishopValueMG", () => p.BishopValueMG, v => { p.BishopValueMG = v; EvalParams.ClampAllParameters(p); }, 5, def.BishopValueMG),
+                ("RookValueMG", () => p.RookValueMG, v => { p.RookValueMG = v; EvalParams.ClampAllParameters(p); }, 5, def.RookValueMG),
+                ("QueenValueMG", () => p.QueenValueMG, v => { p.QueenValueMG = v; EvalParams.ClampAllParameters(p); }, 10, def.QueenValueMG),
+                ("PawnValueEG", () => p.PawnValueEG, v => { p.PawnValueEG = v; EvalParams.ClampAllParameters(p); }, 5, def.PawnValueEG),
+                ("KnightValueEG", () => p.KnightValueEG, v => { p.KnightValueEG = v; EvalParams.ClampAllParameters(p); }, 5, def.KnightValueEG),
+                ("BishopValueEG", () => p.BishopValueEG, v => { p.BishopValueEG = v; EvalParams.ClampAllParameters(p); }, 5, def.BishopValueEG),
+                ("RookValueEG", () => p.RookValueEG, v => { p.RookValueEG = v; EvalParams.ClampAllParameters(p); }, 5, def.RookValueEG),
+                ("QueenValueEG", () => p.QueenValueEG, v => { p.QueenValueEG = v; EvalParams.ClampAllParameters(p); }, 10, def.QueenValueEG),
+                ("BishopPairBonusMG", () => p.BishopPairBonusMG, v => { p.BishopPairBonusMG = v; EvalParams.ClampAllParameters(p); }, 1, def.BishopPairBonusMG),
+                ("BishopPairBonusEG", () => p.BishopPairBonusEG, v => { p.BishopPairBonusEG = v; EvalParams.ClampAllParameters(p); }, 1, def.BishopPairBonusEG),
+                ("RookOpenFileBonus", () => p.RookOpenFileBonus, v => { p.RookOpenFileBonus = v; EvalParams.ClampAllParameters(p); }, 1, def.RookOpenFileBonus),
+                ("RookSemiOpenFileBonus", () => p.RookSemiOpenFileBonus, v => { p.RookSemiOpenFileBonus = v; EvalParams.ClampAllParameters(p); }, 1, def.RookSemiOpenFileBonus),
+                ("DoubledPawnPenalty", () => p.DoubledPawnPenalty, v => { p.DoubledPawnPenalty = v; EvalParams.ClampAllParameters(p); }, 1, def.DoubledPawnPenalty),
+                ("IsolatedPawnPenalty", () => p.IsolatedPawnPenalty, v => { p.IsolatedPawnPenalty = v; EvalParams.ClampAllParameters(p); }, 1, def.IsolatedPawnPenalty),
+                ("BackwardPawnPenalty", () => p.BackwardPawnPenalty, v => { p.BackwardPawnPenalty = v; EvalParams.ClampAllParameters(p); }, 1, def.BackwardPawnPenalty),
+                ("MobilityBonus", () => p.MobilityBonus, v => { p.MobilityBonus = v; EvalParams.ClampAllParameters(p); }, 1, def.MobilityBonus),
+                ("KingShieldBonus", () => p.KingShieldBonus, v => { p.KingShieldBonus = v; EvalParams.ClampAllParameters(p); }, 1, def.KingShieldBonus),
+                ("KingOpenFilePenalty", () => p.KingOpenFilePenalty, v => { p.KingOpenFilePenalty = v; EvalParams.ClampAllParameters(p); }, 1, def.KingOpenFilePenalty),
+                ("RookOnSeventhBonusMG", () => p.RookOnSeventhBonusMG, v => { p.RookOnSeventhBonusMG = v; EvalParams.ClampAllParameters(p); }, 1, def.RookOnSeventhBonusMG),
+                ("RookOnSeventhBonusEG", () => p.RookOnSeventhBonusEG, v => { p.RookOnSeventhBonusEG = v; EvalParams.ClampAllParameters(p); }, 1, def.RookOnSeventhBonusEG),
+                ("RookOnSeventhWithKingBonus", () => p.RookOnSeventhWithKingBonus, v => { p.RookOnSeventhWithKingBonus = v; EvalParams.ClampAllParameters(p); }, 1, def.RookOnSeventhWithKingBonus),
+                ("BadBishopPenalty", () => p.BadBishopPenalty, v => { p.BadBishopPenalty = v; EvalParams.ClampAllParameters(p); }, 1, def.BadBishopPenalty),
+                ("BishopLongDiagonalBonus", () => p.BishopLongDiagonalBonus, v => { p.BishopLongDiagonalBonus = v; EvalParams.ClampAllParameters(p); }, 1, def.BishopLongDiagonalBonus),
+                ("KingOwnPasserProximity", () => p.KingOwnPasserProximity, v => { p.KingOwnPasserProximity = v; EvalParams.ClampAllParameters(p); }, 1, def.KingOwnPasserProximity),
+                ("KingEnemyPasserProximity", () => p.KingEnemyPasserProximity, v => { p.KingEnemyPasserProximity = v; EvalParams.ClampAllParameters(p); }, 1, def.KingEnemyPasserProximity)
             };
             return list;
         }
 
-        private static void ShuffleParameterActions(List<(string name, Func<int> getter, Action<int> setter, int step)> list, int seed)
+        private static void ShuffleParameterActions(List<(string name, Func<int> getter, Action<int> setter, int step, int defaultValue)> list, int seed)
         {
             var rnd = new Random(seed);
             for (int i = list.Count - 1; i > 0; i--)
@@ -611,6 +604,13 @@ namespace ChessEngine
                 int j = rnd.Next(i + 1);
                 (list[i], list[j]) = (list[j], list[i]);
             }
+        }
+
+        private static double RegularizationPenalty(int current, int defaultValue)
+        {
+            if (L2RegularizationStrength <= 0) return 0;
+            double diff = current - defaultValue;
+            return L2RegularizationStrength * diff * diff;
         }
 
         /// <summary>
@@ -660,7 +660,7 @@ namespace ChessEngine
                 ShuffleParameterActions(paramActions, iter);
 
                 foreach (var a in paramActions)
-                    TuneParameter(tuneList, a.getter, a.setter, a.name, a.step);
+                    TuneParameter(tuneList, a.getter, a.setter, a.name, a.step, a.defaultValue);
 
                 // Check convergence
                 double currentError = ComputeErrorParallel(positions);
@@ -695,21 +695,13 @@ namespace ChessEngine
             Console.WriteLine($"Piece Values (MG): P={p.PawnValueMG} N={p.KnightValueMG} B={p.BishopValueMG} R={p.RookValueMG} Q={p.QueenValueMG}");
             Console.WriteLine($"Piece Values (EG): P={p.PawnValueEG} N={p.KnightValueEG} B={p.BishopValueEG} R={p.RookValueEG} Q={p.QueenValueEG}");
             Console.WriteLine($"Bishop Pair: MG={p.BishopPairBonusMG} EG={p.BishopPairBonusEG}");
-            Console.WriteLine($"Rook Open File: MG={p.RookOpenFileBonusMG} EG={p.RookOpenFileBonusEG}");
-            Console.WriteLine($"Rook Semi-Open: MG={p.RookSemiOpenFileBonusMG} EG={p.RookSemiOpenFileBonusEG}");
-            Console.WriteLine($"Doubled Pawn: MG={p.DoubledPawnPenaltyMG} EG={p.DoubledPawnPenaltyEG}");
-            Console.WriteLine($"Isolated Pawn: MG={p.IsolatedPawnPenaltyMG} EG={p.IsolatedPawnPenaltyEG}");
-            Console.WriteLine($"Mobility: MG={p.MobilityBonusMG} EG={p.MobilityBonusEG}");
-            Console.WriteLine($"Queen Mobility: MG={p.QueenMobilityBonusMG} EG={p.QueenMobilityBonusEG}");
-            Console.WriteLine($"King Shield: {p.KingShieldBonus}");
-            Console.WriteLine($"King Open File Penalty: {p.KingOpenFilePenalty}");
-            Console.WriteLine($"Knight Outpost: MG={p.KnightOutpostBonusMG} EG={p.KnightOutpostBonusEG}");
+            Console.WriteLine($"Rook Open/Semi-Open: {p.RookOpenFileBonus} / {p.RookSemiOpenFileBonus}");
+            Console.WriteLine($"Doubled/Isolated/Backward Pawn: {p.DoubledPawnPenalty} / {p.IsolatedPawnPenalty} / {p.BackwardPawnPenalty}");
+            Console.WriteLine($"Mobility: {p.MobilityBonus}");
+            Console.WriteLine($"King Shield: {p.KingShieldBonus} Open File Penalty: {p.KingOpenFilePenalty}");
             Console.WriteLine($"Rook on 7th: MG={p.RookOnSeventhBonusMG} EG={p.RookOnSeventhBonusEG} WithKing={p.RookOnSeventhWithKingBonus}");
-            Console.WriteLine($"King Attack Weight Penalty: {p.KingAttackWeightPenalty}");
-            Console.WriteLine($"Backward Pawn: MG={p.BackwardPawnPenaltyMG} EG={p.BackwardPawnPenaltyEG}");
-            Console.WriteLine($"Space Bonus MG: {p.SpaceBonusMG}");
-            Console.WriteLine($"Bad Bishop Penalty: {p.BadBishopPenalty} Bishop Long Diagonal: {p.BishopLongDiagonalBonus}");
-            Console.WriteLine($"Queen Tropism: {p.QueenTropismBonus}");
+            Console.WriteLine($"Bad Bishop: {p.BadBishopPenalty} Bishop Long Diagonal: {p.BishopLongDiagonalBonus}");
+            Console.WriteLine($"King Passer Proximity: Own={p.KingOwnPasserProximity} Enemy={p.KingEnemyPasserProximity}");
         }
 
         /// <summary>
