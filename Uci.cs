@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ChessEngine
 {
@@ -13,7 +14,7 @@ namespace ChessEngine
         private const int DefaultThreads = 8;
 
         private static readonly TimeManager _timeManager = new TimeManager();
-        private static Thread? _searchThread;
+        private static Task? _searchTask;
         private static Board? _goBoard;
         private static int _numThreads = DefaultThreads;
         private static bool _inPonderMode;
@@ -48,18 +49,18 @@ namespace ChessEngine
                         WriteLineFlush("uciok");
                         break;
                     case "isready":
-                        if (_searchThread?.IsAlive == true)
+                        if (_searchTask != null && !_searchTask.IsCompleted)
                         {
                             Search.RequestStop();
-                            _searchThread.Join(5000);
+                            _searchTask.Wait(5000);
                         }
                         WriteLineFlush("readyok");
                         break;
                     case "ucinewgame":
-                        if (_searchThread?.IsAlive == true)
+                        if (_searchTask != null && !_searchTask.IsCompleted)
                         {
                             Search.RequestStop();
-                            _searchThread.Join(5000);
+                            _searchTask.Wait(5000);
                         }
                         board = new Board();
                         Search.ClearHash();
@@ -69,25 +70,25 @@ namespace ChessEngine
                         HandleSetOption(parts);
                         break;
                     case "position":
-                        if (_searchThread?.IsAlive == true)
+                        if (_searchTask != null && !_searchTask.IsCompleted)
                         {
                             Search.RequestStop();
-                            _searchThread.Join(5000);
+                            _searchTask.Wait(5000);
                         }
                         HandlePosition(board, parts);
                         break;
                     case "go":
-                        if (_searchThread?.IsAlive == true)
+                        if (_searchTask != null && !_searchTask.IsCompleted)
                         {
                             Search.RequestStop();
-                            _searchThread.Join(5000);
+                            _searchTask.Wait(5000);
                         }
                         HandleGo(board, parts);
                         break;
                     case "stop":
                         Search.RequestStop();
-                        if (_searchThread?.IsAlive == true)
-                            _searchThread.Join(10000);
+                        if (_searchTask != null && !_searchTask.IsCompleted)
+                            _searchTask.Wait(10000);
                         if (_inPonderMode)
                         {
                             _inPonderMode = false;
@@ -100,8 +101,8 @@ namespace ChessEngine
                         break;
                     case "quit":
                         Search.RequestStop();
-                        if (_searchThread?.IsAlive == true)
-                            _searchThread.Join(2000);
+                        if (_searchTask != null && !_searchTask.IsCompleted)
+                            _searchTask.Wait(2000);
                         return;
                 }
             }
@@ -223,7 +224,7 @@ namespace ChessEngine
                 return;
             }
 
-            _searchThread = new Thread(() =>
+            _searchTask = Task.Run(() =>
             {
                 try
                 {
@@ -242,8 +243,6 @@ namespace ChessEngine
                         SendBestMoveFromLastResult(board, Search.GetLastResult());
                 }
             });
-            _searchThread.IsBackground = true;
-            _searchThread.Start();
         }
 
         private static void SendBookMove(Board board, Move move)

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ChessEngine
 {
@@ -42,8 +43,15 @@ namespace ChessEngine
         // Node counter for time check optimization and UCI info (shared, atomic)
         private static long _nodeCount;
 
+        // Diagnostic counters for search efficiency analysis
+        private static long _nullMoveAttempts;
+        private static long _nullMoveCutoffs;
+        private static long _ttCutoffs;
+        private static long _betaCutoffs;
+        private static long _lmrResearches;
+
         // Late Move Pruning thresholds by depth (reduced pruning for accuracy)
-        private static readonly int[] LMPThresholds = { 0, 16, 24, 32, 48, 64, 80 };
+        private static readonly int[] LMPThresholds = { 0, 10, 14, 18, 22, 26, 30 };
 
         // Shared best result for multi-threaded search
         private static readonly object _resultLock = new object();
@@ -64,7 +72,9 @@ namespace ChessEngine
             if (_mySearchGeneration.Value != _searchGeneration)
             {
                 Array.Clear(Killers, 0, Killers.Length);
-                Array.Clear(History, 0, History.Length);
+                for (int i = 0; i < History.GetLength(0); i++)
+                    for (int j = 0; j < History.GetLength(1); j++)
+                        History[i, j] /= 2;
                 Array.Clear(Counters, 0, Counters.Length);
                 PreviousMove = default;
                 _mySearchGeneration.Value = _searchGeneration;
@@ -419,6 +429,19 @@ namespace ChessEngine
         private static void ClearSearchTables()
         {
             _searchGeneration++;
+            _nullMoveAttempts = 0;
+            _nullMoveCutoffs = 0;
+            _ttCutoffs = 0;
+            _betaCutoffs = 0;
+            _lmrResearches = 0;
+        }
+
+        private static void PrintDiagnostics()
+        {
+            long attempts = _nullMoveAttempts;
+            long cutoffs = _nullMoveCutoffs;
+            double ratio = attempts > 0 ? (100.0 * cutoffs / attempts) : 0;
+            Console.Error.WriteLine($"Diagnostics: nullAttempts={attempts} nullCutoffs={cutoffs} (ratio {ratio:F1}%) ttCutoffs={_ttCutoffs} betaCutoffs={_betaCutoffs} lmrResearches={_lmrResearches}");
         }
 
         public static SearchResult FindBestMove(Board board, TimeManager timeManager, int maxDepth = 64, int numThreads = 1)
@@ -448,18 +471,16 @@ namespace ChessEngine
                     return FindBestMoveSingleThread(board, rootFen, rootMoves, maxDepth, timeManager);
                 }
 
-                // Multi-threaded Lazy SMP
+                // Multi-threaded Lazy SMP (Task.Run uses ThreadPool - avoids ThreadLocal accumulation)
                 _bestDepthReached = 0;
                 _bestMoveOverall = rootMoves[0];
                 _bestScoreOverall = 0;
                 _lastResult = new SearchResult(_bestMoveOverall, _bestScoreOverall, 0, default);
 
-                var workers = new Thread[numThreads - 1];
-                for (int t = 0; t < workers.Length; t++)
+                var workerTasks = new Task[numThreads - 1];
+                for (int t = 0; t < workerTasks.Length; t++)
                 {
-                    workers[t] = new Thread(() => SearchThreadBody(rootFen, rootMoves, maxDepth, timeManager));
-                    workers[t].IsBackground = true;
-                    workers[t].Start();
+                    workerTasks[t] = Task.Run(() => SearchThreadBody(rootFen, rootMoves, maxDepth, timeManager));
                 }
 
                 try
@@ -469,10 +490,10 @@ namespace ChessEngine
                 catch (SearchTimeoutException) { }
 
                 _stopRequested = true;
-                for (int t = 0; t < workers.Length; t++)
-                    workers[t].Join(5000);
+                Task.WaitAll(workerTasks, 5000);
 
                 _timeManager = null;
+                PrintDiagnostics();
                 Fen.Load(board, rootFen);
                 Move ponder = GetPonderMove(board, _bestMoveOverall);
                 return new SearchResult(_bestMoveOverall, _bestScoreOverall, _bestDepthReached, ponder);
@@ -493,13 +514,12 @@ namespace ChessEngine
             int myBestScore = 0;
             int alpha = -Infinity;
             int beta = Infinity;
-            const int AspirationDelta = 25;
 
             for (int depth = 1; depth <= maxDepth; depth++)
             {
                 try
                 {
-                    int delta = AspirationDelta;
+                    int delta = depth >= 6 ? 25 : (depth >= 4 ? 50 : 25);
                     if (depth >= 4)
                     {
                         alpha = myBestScore - delta;
@@ -508,7 +528,7 @@ namespace ChessEngine
 
                     while (true)
                     {
-                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(myBoard, depth, alpha, beta);
+                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(myBoard, depth, alpha, beta, myBestMove);
 
                         if (bestScoreAtDepth <= alpha)
                         {
@@ -561,13 +581,12 @@ namespace ChessEngine
             int depthReached = 0;
             int alpha = -Infinity;
             int beta = Infinity;
-            const int AspirationDelta = 25;
 
             for (int depth = 1; depth <= maxDepth; depth++)
             {
                 try
                 {
-                    int delta = AspirationDelta;
+                    int delta = depth >= 6 ? 25 : (depth >= 4 ? 50 : 25);
                     if (depth >= 4)
                     {
                         alpha = bestScoreOverall - delta;
@@ -576,7 +595,7 @@ namespace ChessEngine
 
                     while (true)
                     {
-                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
+                        var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta, bestMoveOverall);
 
                         if (bestScoreAtDepth <= alpha)
                         {
@@ -612,6 +631,7 @@ namespace ChessEngine
             }
 
             _timeManager = null;
+            PrintDiagnostics();
             Move finalPonder = GetPonderMove(board, bestMoveOverall);
             return new SearchResult(bestMoveOverall, bestScoreOverall, depthReached, finalPonder);
         }
@@ -644,13 +664,12 @@ namespace ChessEngine
 
                 int alpha = -Infinity;
                 int beta = Infinity;
-                const int AspirationDelta = 25;
 
                 for (int depth = 1; depth <= maxDepth; depth++)
                 {
                     try
                     {
-                        int delta = AspirationDelta;
+                        int delta = depth >= 6 ? 25 : (depth >= 4 ? 50 : 25);
                         if (depth >= 4)
                         {
                             alpha = bestScoreOverall - delta;
@@ -659,7 +678,7 @@ namespace ChessEngine
 
                         while (true)
                         {
-                            var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta);
+                            var (bestMoveAtDepth, bestScoreAtDepth) = SearchRoot(board, depth, alpha, beta, bestMoveOverall);
 
                             if (bestScoreAtDepth <= alpha)
                             {
@@ -692,6 +711,7 @@ namespace ChessEngine
 
                 Move finalPonder = GetPonderMove(board, bestMoveOverall);
                 _lastResult = new SearchResult(bestMoveOverall, bestScoreOverall, depthReached, finalPonder);
+                PrintDiagnostics();
                 return _lastResult;
             }
             finally
@@ -700,7 +720,7 @@ namespace ChessEngine
             }
         }
 
-        private static (Move bestMove, int bestScore) SearchRoot(Board board, int depth, int alpha, int beta)
+        private static (Move bestMove, int bestScore) SearchRoot(Board board, int depth, int alpha, int beta, Move previousBestMove = default)
         {
             CheckTime();
 
@@ -714,6 +734,19 @@ namespace ChessEngine
 
             Move ttMove = _tt.GetTTMove(board.ZobristHash);
             OrderMoves(board, moves, moveCount, ttMove, 0);
+
+            if (previousBestMove.From != previousBestMove.To || previousBestMove.Promotion != Piece.Empty)
+            {
+                for (int i = 1; i < moveCount; i++)
+                {
+                    if (MovesEqual(moves[i], previousBestMove))
+                    {
+                        (moves[0], moves[i]) = (moves[i], moves[0]);
+                        (MoveScores[0], MoveScores[i]) = (MoveScores[i], MoveScores[0]);
+                        break;
+                    }
+                }
+            }
 
             Move bestMove = moves[0];
             int bestScore = -Infinity;
@@ -773,9 +806,9 @@ namespace ChessEngine
                     return 0;
             }
 
-            // Check extension: extend search when in check
+            // Check extension: extend search when in check (capped to avoid tree explosion)
             bool inCheck = board.IsKingInCheck(board.WhiteToMove);
-            if (inCheck)
+            if (inCheck && depth <= 8)
                 depth++;
 
             if (depth <= 0)
@@ -785,7 +818,10 @@ namespace ChessEngine
             bool isPV = beta - alpha > 1;
 
             if (_tt.Probe(board.ZobristHash, depth, alpha, beta, ply, out int ttScore, out Move ttMove))
+            {
+                Interlocked.Increment(ref _ttCutoffs);
                 return ttScore;
+            }
 
             int quickEval = Evaluator.QuickEvaluate(board);
             // Use full eval when depth >= 3 for null move and futility decisions
@@ -796,15 +832,12 @@ namespace ChessEngine
 
             // Razor and RFP disabled for evaluation accuracy
 
-            // Null move pruning: restricted to depth >= 5 and phase >= 12 for safety
-            bool allowNullMove = (board.Phase > 6 || staticEval - beta <= 100) && (staticEval >= alpha - 100);
-            if (!isNullMove && !inCheck && depth >= 5 && HasNonPawnMaterial(board) && board.Phase >= 12 && allowNullMove)
+            // Null move pruning: depth >= 3, HasNonPawnMaterial excludes K+P zugzwang
+            if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board))
             {
-                int R = 3 + depth / 6;
-                if (staticEval - beta > 200) R++; // More aggressive when winning
-                if (staticEval - beta > 400) R--; // Reduce R when far ahead (zugzwang risk in endgame)
+                Interlocked.Increment(ref _nullMoveAttempts);
+                int R = 3 + depth / 5;
                 R = Math.Min(R, depth - 1);
-                R = Math.Max(R, 1);
 
                 board.MakeNullMove();
                 int nullScore = -AlphaBeta(board, depth - R, -beta, -beta + 1, ply + 1, true);
@@ -813,7 +846,7 @@ namespace ChessEngine
                 if (nullScore >= beta)
                 {
                     // In endgame, verify null move cutoff to avoid zugzwang false positives
-                    if (board.Phase <= 10 && depth >= 4)
+                    if (board.Phase <= 12 && depth >= 4)
                     {
                         board.MakeNullMove();
                         int verifyScore = -AlphaBeta(board, depth - 2, -beta, -alpha, ply + 1, true);
@@ -821,6 +854,7 @@ namespace ChessEngine
                         if (verifyScore < beta)
                             goto SkipNullMoveCutoff;
                     }
+                    Interlocked.Increment(ref _nullMoveCutoffs);
                     return beta;
                 }
             }
@@ -850,8 +884,9 @@ namespace ChessEngine
             bool losing = staticEval < alpha - LosingMargin;
 
             // Futility: increased margins for accuracy; skip when losing so we don't prune the saving move
-            int[] futilityMargins = { 0, 300, 600, 900, 1400 };
+            int[] futilityMargins = { 0, 200, 400, 600, 900 };
             bool canFutilityPrune = !inCheck && !isPV && !losing && depth <= 4 && depth < futilityMargins.Length && staticEval + futilityMargins[depth] < alpha;
+            bool canReverseFutilityPrune = false;  // disabled: was pruning winning quiet moves
 
             Move prevMove = PreviousMove;
             var picker = new MovePicker(board, MoveStacks[ply], ttMove, ply);
@@ -874,10 +909,19 @@ namespace ChessEngine
                 if (canFutilityPrune && movesSearched > 0 && isQuiet)
                     continue;
 
+                if (canReverseFutilityPrune && movesSearched > 0 && isQuiet)
+                    continue;
+
                 // SEE pruning: restrict to depth 1 only for accuracy
                 if (move.IsCapture && !move.IsPromotion && movesSearched > 0 && depth <= 1)
                 {
                     if (SEE(board, move) < 0)
+                        continue;
+                }
+                // At depth 2-3, prune clearly bad captures
+                if (move.IsCapture && !move.IsPromotion && movesSearched > 0 && depth >= 2 && depth <= 3)
+                {
+                    if (SEE(board, move) < -100)
                         continue;
                 }
 
@@ -889,13 +933,14 @@ namespace ChessEngine
 
                 PreviousMove = move;
                 board.MakeMove(move);
+                bool givesCheck = board.IsKingInCheck(board.WhiteToMove);
 
-                // LMR: reduced aggressiveness - require depth >= 5, after 10 moves, smaller reduction
+                // LMR: no reduction at PV nodes; dynamic reduction for late quiet moves
                 int reduction = 0;
-                if (depth >= 5 && movesSearched >= 10 && isQuiet && !inCheck && !improving && !losing)
+                if (depth >= 3 && movesSearched >= 3 && !isPV && isQuiet && !inCheck && !givesCheck && !isRecapture)
                 {
-                    reduction = 1 + (depth / 6) + (movesSearched / 16);
-                    reduction = Math.Min(reduction, depth / 3);
+                    reduction = 1 + (depth / 5) + (movesSearched / 8);
+                    reduction = Math.Min(reduction, depth - 2);
                 }
 
                 int score;
@@ -905,7 +950,10 @@ namespace ChessEngine
                 {
                     score = -AlphaBeta(board, newDepth - reduction, -alpha - 1, -alpha, ply + 1, false);
                     if (reduction > 0 && score > alpha)
+                    {
+                        Interlocked.Increment(ref _lmrResearches);
                         score = -AlphaBeta(board, newDepth, -alpha - 1, -alpha, ply + 1, false);
+                    }
                     if (score > alpha && score < beta)
                         score = -AlphaBeta(board, newDepth, -beta, -alpha, ply + 1, false);
                 }
@@ -915,6 +963,7 @@ namespace ChessEngine
 
                 if (score >= beta)
                 {
+                    Interlocked.Increment(ref _betaCutoffs);
                     _tt.Store(board.ZobristHash, depth, beta, TTFlag.Beta, move, ply);
                     if (isQuiet && ply < MaxPly)
                     {
@@ -1254,8 +1303,8 @@ namespace ChessEngine
             for (int i = 0; i < moveCount; i++)
                 MoveScores[i] = ScoreMove(board, moves[i], ttMove, ply);
 
-            // Lazy selection sort - only sort top 10 moves since cutoffs usually happen early
-            int sortLimit = Math.Min(10, moveCount - 1);
+            // Sort all moves for correct root ordering (best move must be first for PVS)
+            int sortLimit = moveCount - 1;
             for (int i = 0; i < sortLimit; i++)
             {
                 int bestIdx = i;

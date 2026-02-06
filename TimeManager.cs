@@ -6,8 +6,8 @@ namespace ChessEngine
 
     public class TimeManager
     {
-        private const int StabilityThreshold = 50;
-        private const int StableIterationsForEarlyExit = 3;
+        private const int StabilityThreshold = 75;
+        private const int StableIterationsForEarlyExit = 4;
         private const double MaxExtension = 2.0;
         private const int SafetyMarginMs = 20;
         private const int MinTimeMs = 10;
@@ -123,7 +123,7 @@ namespace ChessEngine
             // When winning or losing, require a higher minimum fraction of base time before allowing early exit
             bool winning = _lastScore >= WinningScoreThreshold;
             bool losing = _lastScore <= -LosingScoreThreshold;
-            long minTimeBeforeEarlyExit = (winning || losing) ? (BaseTimeMs * 3) / 4 : BaseTimeMs / 2;
+            long minTimeBeforeEarlyExit = (winning || losing) ? (BaseTimeMs * 3) / 4 : (BaseTimeMs * 2) / 3;
             return _stableIterations >= StableIterationsForEarlyExit && elapsedMs >= minTimeBeforeEarlyExit;
         }
 

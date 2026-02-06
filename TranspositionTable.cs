@@ -60,14 +60,15 @@ namespace ChessEngine
         {
             int entrySize = Unsafe.SizeOf<TTEntry>();
             long totalBytes = (long)sizeMB * 1024 * 1024;
-            long numEntries = totalBytes / entrySize;
+            long numSlots = totalBytes / entrySize;
+            long numBuckets = numSlots / 2;
 
             _entries = 1;
-            while (_entries * 2 <= numEntries)
+            while (_entries * 2 <= numBuckets)
                 _entries *= 2;
 
             _mask = (ulong)(_entries - 1);
-            _table = new TTEntry[_entries];
+            _table = new TTEntry[_entries * 2];
         }
 
         public void Clear()
@@ -88,50 +89,70 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Store(ulong hash, int depth, int score, TTFlag flag, Move bestMove, int ply)
         {
-            int index = (int)(hash & _mask);
-            object bucketLock = _locks[index & LockMask];
+            int bucket = (int)(hash & _mask);
+            int baseIdx = bucket * 2;
+            object bucketLock = _locks[bucket & LockMask];
             lock (bucketLock)
             {
-                ref TTEntry entry = ref _table[index];
-                // Replace if new entry has greater or equal depth (prefer newer)
-                if (depth < entry.Depth && entry.Hash == hash)
-                    return;
+                ref TTEntry e0 = ref _table[baseIdx];
+                ref TTEntry e1 = ref _table[baseIdx + 1];
 
-                // Adjust mate scores for storage
+                ref TTEntry target = ref e0;
+                if (e0.Hash == hash)
+                {
+                    if (depth < e0.Depth) return;
+                }
+                else if (e1.Hash == hash)
+                {
+                    if (depth < e1.Depth) return;
+                    target = ref e1;
+                }
+                else
+                {
+                    int d0 = e0.Flag == TTFlag.None ? -1 : e0.Depth;
+                    int d1 = e1.Flag == TTFlag.None ? -1 : e1.Depth;
+                    if (d1 < d0) target = ref e1;
+                }
+
                 if (score > MateThreshold)
                     score += ply;
                 else if (score < -MateThreshold)
                     score -= ply;
-
-                entry.Hash = hash;
-                entry.Score = (short)score;
-                entry.Depth = (byte)depth;
-                entry.Flag = flag;
-                entry.BestMove = TTEntry.EncodeMove(bestMove);
+                target.Hash = hash;
+                target.Score = (short)score;
+                target.Depth = (byte)depth;
+                target.Flag = flag;
+                target.BestMove = TTEntry.EncodeMove(bestMove);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool Probe(ulong hash, int depth, int alpha, int beta, int ply, out int score, out Move ttMove)
         {
-            int index = (int)(hash & _mask);
-            object bucketLock = _locks[index & LockMask];
+            int bucket = (int)(hash & _mask);
+            int baseIdx = bucket * 2;
+            object bucketLock = _locks[bucket & LockMask];
             lock (bucketLock)
             {
-                ref TTEntry entry = ref _table[index];
+                ref TTEntry e0 = ref _table[baseIdx];
+                ref TTEntry e1 = ref _table[baseIdx + 1];
 
                 score = 0;
                 ttMove = default;
 
-                if (entry.Hash != hash)
-                    return false;
+                ref TTEntry entry = ref e0;
+                if (e0.Hash != hash)
+                {
+                    if (e1.Hash != hash) return false;
+                    entry = ref e1;
+                }
+                else if (e1.Hash == hash && e1.Depth > e0.Depth)
+                    entry = ref e1;
 
                 ttMove = TTEntry.DecodeMove(entry.BestMove);
-
                 if (entry.Depth < depth)
                     return false;
 
-                // Adjust mate scores for retrieval
                 int ttScore = entry.Score;
                 if (ttScore > MateThreshold)
                     ttScore -= ply;
@@ -150,7 +171,6 @@ namespace ChessEngine
                         score = beta;
                         return true;
                 }
-
                 return false;
             }
         }
@@ -158,12 +178,17 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Move GetTTMove(ulong hash)
         {
-            int index = (int)(hash & _mask);
-            object bucketLock = _locks[index & LockMask];
+            int bucket = (int)(hash & _mask);
+            int baseIdx = bucket * 2;
+            object bucketLock = _locks[bucket & LockMask];
             lock (bucketLock)
             {
-                ref TTEntry entry = ref _table[index];
-                return entry.Hash == hash ? TTEntry.DecodeMove(entry.BestMove) : default;
+                ref TTEntry e0 = ref _table[baseIdx];
+                ref TTEntry e1 = ref _table[baseIdx + 1];
+                TTEntry best = default;
+                if (e0.Hash == hash) best = e0;
+                if (e1.Hash == hash && (best.Hash == 0 || e1.Depth > best.Depth)) best = e1;
+                return best.Hash == hash ? TTEntry.DecodeMove(best.BestMove) : default;
             }
         }
 
@@ -173,19 +198,23 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool ProbeForSingular(ulong hash, int depth, out int score, out TTFlag flag)
         {
-            int index = (int)(hash & _mask);
-            object bucketLock = _locks[index & LockMask];
+            int bucket = (int)(hash & _mask);
+            int baseIdx = bucket * 2;
+            object bucketLock = _locks[bucket & LockMask];
             lock (bucketLock)
             {
-                ref TTEntry entry = ref _table[index];
+                ref TTEntry e0 = ref _table[baseIdx];
+                ref TTEntry e1 = ref _table[baseIdx + 1];
 
                 score = 0;
                 flag = TTFlag.None;
 
+                TTEntry entry = default;
+                if (e0.Hash == hash) entry = e0;
+                if (e1.Hash == hash && (entry.Hash == 0 || e1.Depth > entry.Depth)) entry = e1;
                 if (entry.Hash != hash)
                     return false;
 
-                // Need sufficient depth for singular extension
                 if (entry.Depth < depth - 3)
                     return false;
 
@@ -204,17 +233,14 @@ namespace ChessEngine
             if (_entries == 0)
                 return 0;
 
-            // Sample first 1000 entries or all entries if table is smaller
-            int sampleSize = Math.Min(1000, _entries);
+            int sampleBuckets = Math.Min(1000, _entries);
             int used = 0;
-
-            for (int i = 0; i < sampleSize; i++)
+            for (int i = 0; i < sampleBuckets; i++)
             {
-                if (_table[i].Flag != TTFlag.None)
-                    used++;
+                if (_table[i * 2].Flag != TTFlag.None) used++;
+                if (_table[i * 2 + 1].Flag != TTFlag.None) used++;
             }
-
-            return used * 1000 / sampleSize;
+            return used * 1000 / (sampleBuckets * 2);
         }
     }
 }
