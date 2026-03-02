@@ -12,8 +12,10 @@ namespace ChessEngine
         private const string EngineAuthor = "marcl";
         private const int DefaultHashSizeMB = 64;
         private const int DefaultThreads = 8;
+        private const int DefaultMoveOverhead = 10;
 
         private static readonly TimeManager _timeManager = new TimeManager();
+        private static int _moveOverhead = DefaultMoveOverhead;
         private static Task? _searchTask;
         private static Board? _goBoard;
         private static int _numThreads = DefaultThreads;
@@ -43,6 +45,7 @@ namespace ChessEngine
                         WriteLineFlush($"id author {EngineAuthor}");
                         WriteLineFlush($"option name Hash type spin default {DefaultHashSizeMB} min 1 max 1024");
                         WriteLineFlush($"option name Threads type spin default {DefaultThreads} min 1 max 512");
+                        WriteLineFlush($"option name Move Overhead type spin default {DefaultMoveOverhead} min 0 max 1000");
                         WriteLineFlush($"option name BookFile type string default {OpeningBook.BookPath}");
                         WriteLineFlush("option name BookDepth type spin default 36 min 0 max 60");
                         WriteLineFlush("option name BookEvalLimit type spin default -40 min -1000 max 100");
@@ -137,6 +140,12 @@ namespace ChessEngine
             {
                 _numThreads = Math.Max(1, Math.Min(512, threads));
             }
+            else if (optionName.Equals("Move", StringComparison.OrdinalIgnoreCase) &&
+                parts.Length > nameIdx + 1 && parts[nameIdx + 1].Equals("Overhead", StringComparison.OrdinalIgnoreCase) &&
+                TryParseInt(optionValue, out int overhead))
+            {
+                _moveOverhead = Math.Max(0, Math.Min(1000, overhead));
+            }
             else if (optionName.Equals("BookFile", StringComparison.OrdinalIgnoreCase))
             {
                 OpeningBook.BookPath = optionValue;
@@ -220,6 +229,8 @@ namespace ChessEngine
             var bookMove = OpeningBook.TryGetMove(board, plyCount, staticEval);
             if (bookMove.HasValue)
             {
+                string moveStr = bookMove.Value.ToString();
+                WriteLineFlush($"info depth 0 score cp {staticEval} nodes 0 nps 0 time 0 pv {moveStr} string book");
                 SendBookMove(board, bookMove.Value);
                 return;
             }
@@ -232,7 +243,7 @@ namespace ChessEngine
                     if (!_inPonderMode)
                         SendBestMoveFromLastResult(board, result);
                 }
-                catch (Search.SearchTimeoutException)
+                catch (SearchTimeoutException)
                 {
                     if (!_inPonderMode)
                         SendBestMoveFromLastResult(board, Search.GetLastResult());
@@ -251,7 +262,7 @@ namespace ChessEngine
             WriteLineFlush($"bestmove {bestStr}");
         }
 
-        private static void SendBestMoveFromLastResult(Board? board, Search.SearchResult? result = null)
+        private static void SendBestMoveFromLastResult(Board? board, SearchResult? result = null)
         {
             var r = result ?? Search.GetLastResult();
             Move best = r.BestMove;
@@ -303,6 +314,8 @@ namespace ChessEngine
 
             int remaining = board.WhiteToMove ? wtime : btime;
             int increment = board.WhiteToMove ? winc : binc;
+
+            remaining = Math.Max(0, remaining - _moveOverhead);
 
             if (remaining <= 0)
             {

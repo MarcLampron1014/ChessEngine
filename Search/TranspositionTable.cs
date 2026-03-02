@@ -52,7 +52,9 @@ namespace ChessEngine
         public TranspositionTable(int sizeMB = 64)
         {
             for (int i = 0; i < LockCount; i++)
+            {
                 _locks[i] = new object();
+            }
             Resize(sizeMB);
         }
 
@@ -65,7 +67,9 @@ namespace ChessEngine
 
             _entries = 1;
             while (_entries * 2 <= numBuckets)
+            {
                 _entries *= 2;
+            }
 
             _mask = (ulong)(_entries - 1);
             _table = new TTEntry[_entries * 2];
@@ -74,7 +78,9 @@ namespace ChessEngine
         public void Clear()
         {
             for (int i = 0; i < LockCount; i++)
+            {
                 Monitor.Enter(_locks[i]);
+            }
             try
             {
                 Array.Clear(_table, 0, _table.Length);
@@ -82,7 +88,9 @@ namespace ChessEngine
             finally
             {
                 for (int i = 0; i < LockCount; i++)
+                {
                     Monitor.Exit(_locks[i]);
+                }
             }
         }
 
@@ -100,24 +108,37 @@ namespace ChessEngine
                 ref TTEntry target = ref e0;
                 if (e0.Hash == hash)
                 {
-                    if (depth < e0.Depth) return;
+                    if (depth < e0.Depth)
+                    {
+                        return;
+                    }
                 }
                 else if (e1.Hash == hash)
                 {
-                    if (depth < e1.Depth) return;
+                    if (depth < e1.Depth)
+                    {
+                        return;
+                    }
                     target = ref e1;
                 }
                 else
                 {
                     int d0 = e0.Flag == TTFlag.None ? -1 : e0.Depth;
                     int d1 = e1.Flag == TTFlag.None ? -1 : e1.Depth;
-                    if (d1 < d0) target = ref e1;
+                    if (d1 < d0)
+                    {
+                        target = ref e1;
+                    }
                 }
 
                 if (score > MateThreshold)
+                {
                     score += ply;
+                }
                 else if (score < -MateThreshold)
+                {
                     score -= ply;
+                }
                 target.Hash = hash;
                 target.Score = (short)score;
                 target.Depth = (byte)depth;
@@ -143,21 +164,32 @@ namespace ChessEngine
                 ref TTEntry entry = ref e0;
                 if (e0.Hash != hash)
                 {
-                    if (e1.Hash != hash) return false;
+                    if (e1.Hash != hash)
+                    {
+                        return false;
+                    }
                     entry = ref e1;
                 }
                 else if (e1.Hash == hash && e1.Depth > e0.Depth)
+                {
                     entry = ref e1;
+                }
 
                 ttMove = TTEntry.DecodeMove(entry.BestMove);
                 if (entry.Depth < depth)
+                {
                     return false;
+                }
 
                 int ttScore = entry.Score;
                 if (ttScore > MateThreshold)
+                {
                     ttScore -= ply;
+                }
                 else if (ttScore < -MateThreshold)
+                {
                     ttScore += ply;
+                }
 
                 switch (entry.Flag)
                 {
@@ -186,8 +218,14 @@ namespace ChessEngine
                 ref TTEntry e0 = ref _table[baseIdx];
                 ref TTEntry e1 = ref _table[baseIdx + 1];
                 TTEntry best = default;
-                if (e0.Hash == hash) best = e0;
-                if (e1.Hash == hash && (best.Hash == 0 || e1.Depth > best.Depth)) best = e1;
+                if (e0.Hash == hash)
+                {
+                    best = e0;
+                }
+                if (e1.Hash == hash && (best.Hash == 0 || e1.Depth > best.Depth))
+                {
+                    best = e1;
+                }
                 return best.Hash == hash ? TTEntry.DecodeMove(best.BestMove) : default;
             }
         }
@@ -210,13 +248,23 @@ namespace ChessEngine
                 flag = TTFlag.None;
 
                 TTEntry entry = default;
-                if (e0.Hash == hash) entry = e0;
-                if (e1.Hash == hash && (entry.Hash == 0 || e1.Depth > entry.Depth)) entry = e1;
+                if (e0.Hash == hash)
+                {
+                    entry = e0;
+                }
+                if (e1.Hash == hash && (entry.Hash == 0 || e1.Depth > entry.Depth))
+                {
+                    entry = e1;
+                }
                 if (entry.Hash != hash)
+                {
                     return false;
+                }
 
                 if (entry.Depth < depth - 3)
+                {
                     return false;
+                }
 
                 score = entry.Score;
                 flag = entry.Flag;
@@ -231,7 +279,9 @@ namespace ChessEngine
         public int Hashfull()
         {
             if (_entries == 0)
+            {
                 return 0;
+            }
 
             int sampleBuckets = Math.Min(1000, _entries);
             int used = 0;

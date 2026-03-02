@@ -36,6 +36,8 @@ namespace ChessEngine
         public int DoubledPawnPenalty { get; set; } = -15;
         public int IsolatedPawnPenalty { get; set; } = -20;
         public int BackwardPawnPenalty { get; set; } = -15;
+        public int BlockedPawnPenalty { get; set; } = -12;
+        public int PhalanxBonus { get; set; } = 10;
         public int MobilityBonus { get; set; } = 2;
         public int KingShieldBonus { get; set; } = 10;
         public int KingOpenFilePenalty { get; set; } = 10;
@@ -58,6 +60,20 @@ namespace ChessEngine
 
         // Queen tropism (distance to enemy king)
         public int QueenTropismBonus { get; set; } = 2;
+
+        // Knight tropism (distance to enemy king)
+        public int KnightTropismMG { get; set; } = 3;
+
+        // Opposite-colored bishops (endgame draw tendency)
+        public int OppositeColoredBishopsDrawFactor { get; set; } = 25;
+
+        // Pawn storm bonus by rank (index 0-7 for advancing pawns toward enemy king)
+        public int PawnStormBonus4 { get; set; } = 5;
+        public int PawnStormBonus5 { get; set; } = 10;
+        public int PawnStormBonus6 { get; set; } = 20;
+
+        // Hanging piece penalty (threat detection)
+        public int HangingPiecePenalty { get; set; } = 15;
 
         // King-pawn proximity weights (endgame)
         public int KingOwnPasserProximity { get; set; } = 5;
@@ -355,6 +371,8 @@ namespace ChessEngine
             p.DoubledPawnPenalty = Math.Clamp(p.DoubledPawnPenalty, BonusPenaltyMin, 0);
             p.IsolatedPawnPenalty = Math.Clamp(p.IsolatedPawnPenalty, BonusPenaltyMin, 0);
             p.BackwardPawnPenalty = Math.Clamp(p.BackwardPawnPenalty, BonusPenaltyMin, 0);
+            p.BlockedPawnPenalty = Math.Clamp(p.BlockedPawnPenalty, BonusPenaltyMin, 0);
+            p.PhalanxBonus = Math.Clamp(p.PhalanxBonus, 0, BonusPenaltyMax);
             p.MobilityBonus = Math.Clamp(p.MobilityBonus, BonusPenaltyMin, BonusPenaltyMax);
             p.KingShieldBonus = Math.Clamp(p.KingShieldBonus, 0, BonusPenaltyMax);
             p.KingOpenFilePenalty = Math.Clamp(p.KingOpenFilePenalty, 0, BonusPenaltyMax);
@@ -367,6 +385,12 @@ namespace ChessEngine
             p.BadBishopPenalty = Math.Clamp(p.BadBishopPenalty, BonusPenaltyMin, 0);
             p.BishopLongDiagonalBonus = Math.Clamp(p.BishopLongDiagonalBonus, 0, BonusPenaltyMax);
             p.QueenTropismBonus = Math.Clamp(p.QueenTropismBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.KnightTropismMG = Math.Clamp(p.KnightTropismMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.OppositeColoredBishopsDrawFactor = Math.Clamp(p.OppositeColoredBishopsDrawFactor, 0, 100);
+            p.PawnStormBonus4 = Math.Clamp(p.PawnStormBonus4, 0, BonusPenaltyMax);
+            p.PawnStormBonus5 = Math.Clamp(p.PawnStormBonus5, 0, BonusPenaltyMax);
+            p.PawnStormBonus6 = Math.Clamp(p.PawnStormBonus6, 0, BonusPenaltyMax);
+            p.HangingPiecePenalty = Math.Clamp(p.HangingPiecePenalty, 0, BonusPenaltyMax);
             p.KingOwnPasserProximity = Math.Clamp(p.KingOwnPasserProximity, BonusPenaltyMin, BonusPenaltyMax);
             p.KingEnemyPasserProximity = Math.Clamp(p.KingEnemyPasserProximity, BonusPenaltyMin, BonusPenaltyMax);
             p.MopUpCenterDistanceWeight = Math.Clamp(p.MopUpCenterDistanceWeight, 0, BonusPenaltyMax);
