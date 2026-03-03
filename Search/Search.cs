@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -61,6 +62,17 @@ namespace ChessEngine
         private static Move[]? _triedQuietsBuffer;
         private static Move[] TriedQuietsBuffer => _triedQuietsBuffer ??= new Move[TriedQuietsMax];
 
+        private const int HistoryMax = 16384;
+        [ThreadStatic]
+        private static int[]? _staticEvalsArray;
+        private static int[] StaticEvals => _staticEvalsArray ??= new int[MaxPly];
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void UpdateHistory(ref int entry, int bonus)
+        {
+            entry += bonus - entry * Math.Abs(bonus) / HistoryMax;
+        }
+
         private static readonly object _resultLock = new object();
         private static int _bestDepthReached;
         private static Move _bestMoveOverall;
@@ -88,12 +100,7 @@ namespace ChessEngine
                     }
                 }
                 Array.Clear(Counters, 0, Counters.Length);
-                var ch = ContinuationHistory;
-                for (int a = 0; a < ch.GetLength(0); a++)
-                    for (int b = 0; b < ch.GetLength(1); b++)
-                        for (int c = 0; c < ch.GetLength(2); c++)
-                            for (int d = 0; d < ch.GetLength(3); d++)
-                                ch[a, b, c, d] /= 2;
+                Array.Clear(ContinuationHistory, 0, ContinuationHistory.Length);
                 for (int i = 0; i < CaptureHistory.GetLength(0); i++)
                 {
                     for (int j = 0; j < CaptureHistory.GetLength(1); j++)

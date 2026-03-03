@@ -50,7 +50,7 @@ namespace ChessEngine
             }
 
             bool inCheck = board.IsKingInCheck(board.WhiteToMove);
-            if (inCheck)
+            if (inCheck && ply <= 32)
             {
                 depth++;
             }
@@ -62,7 +62,8 @@ namespace ChessEngine
 
             bool isPV = beta - alpha > 1;
 
-            if (_tt.Probe(board.ZobristHash, depth, alpha, beta, ply, out int ttScore, out Move ttMove))
+            bool ttHit = _tt.Probe(board.ZobristHash, depth, alpha, beta, ply, out int ttScore, out Move ttMove);
+            if (ttHit)
             {
                 if (!isPV)
                 {
@@ -72,6 +73,19 @@ namespace ChessEngine
             }
 
             int staticEval = Evaluator.Evaluate(board);
+
+            if (!ttHit && _tt.TryProbeScore(board.ZobristHash, ply, out int rawTTScore, out TTFlag rawTTFlag))
+            {
+                if (rawTTFlag == TTFlag.Exact
+                    || (rawTTFlag == TTFlag.Beta && rawTTScore > staticEval)
+                    || (rawTTFlag == TTFlag.Alpha && rawTTScore < staticEval))
+                {
+                    staticEval = rawTTScore;
+                }
+            }
+
+            if (ply < MaxPly)
+                StaticEvals[ply] = staticEval;
 
             const int LosingMargin = 200;
             const int ReverseFutilityMarginPerDepth = 80;
@@ -98,7 +112,7 @@ namespace ChessEngine
             }
 
             // Null move pruning
-            if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board))
+            if (!isNullMove && !inCheck && depth >= 3 && HasNonPawnMaterial(board) && staticEval >= beta)
             {
                 Interlocked.Increment(ref _nullMoveAttempts);
                 int R = 3 + depth / 5;
@@ -178,8 +192,7 @@ namespace ChessEngine
             Move bestMove = default;
             int movesSearched = 0;
 
-            const int ImprovingMargin = 50;
-            bool improving = staticEval >= alpha - ImprovingMargin;
+            bool improving = ply >= 2 && staticEval > StaticEvals[ply - 2];
             bool losing = staticEval < alpha - LosingMargin;
 
             bool canFutilityPrune = !inCheck && !isPV && !losing && depth <= 4 && depth < FutilityMargins.Length && staticEval + FutilityMargins[depth] < alpha;
@@ -257,7 +270,12 @@ namespace ChessEngine
                 }
                 int newDepth = depth - 1 + extension;
 
-                bool isBadCapture = move.IsCapture && !move.IsPromotion && SEE(board, move) < 0;
+                bool isBadCapture = false;
+                if (!isQuiet && depth >= 3 && movesSearched >= 3 && !isPV && !inCheck && !isRecapture
+                    && move.IsCapture && !move.IsPromotion)
+                {
+                    isBadCapture = SEE(board, move) < 0;
+                }
 
                 if (isQuiet && triedQuietCount < TriedQuietsMax)
                 {
@@ -268,7 +286,6 @@ namespace ChessEngine
                 board.MakeMove(move);
                 bool givesCheck = board.IsKingInCheck(board.WhiteToMove);
 
-                // LMR: apply to quiet moves and also to bad captures
                 int reduction = 0;
                 if (depth >= 3 && movesSearched >= 3 && !isPV && (isQuiet || isBadCapture) && !inCheck && !givesCheck && !isRecapture)
                 {
@@ -322,17 +339,18 @@ namespace ChessEngine
                     }
                     if (isQuiet)
                     {
+                        int bonus = depth * depth;
                         Piece piece = board.PieceAt(move.From);
                         if (piece == Piece.Empty)
                             piece = board.PieceAt(move.To);
-                        History[(int)piece, move.To] += depth * depth;
+                        UpdateHistory(ref History[(int)piece, move.To], bonus);
                         
                         if (prevMove.From != prevMove.To)
                         {
                             Piece prevPiece = board.PieceAt(prevMove.To);
                             if (prevPiece != Piece.Empty)
                             {
-                                ContinuationHistory[(int)prevPiece, prevMove.To, (int)piece, move.To] += depth * depth;
+                                UpdateHistory(ref ContinuationHistory[(int)prevPiece, prevMove.To, (int)piece, move.To], bonus);
                             }
                         }
 
@@ -345,13 +363,13 @@ namespace ChessEngine
                                 triedPiece = board.PieceAt(tried.To);
                             if (triedPiece != Piece.Empty)
                             {
-                                History[(int)triedPiece, tried.To] += malus;
+                                UpdateHistory(ref History[(int)triedPiece, tried.To], malus);
 
                                 if (prevMove.From != prevMove.To)
                                 {
                                     Piece pp = board.PieceAt(prevMove.To);
                                     if (pp != Piece.Empty)
-                                        ContinuationHistory[(int)pp, prevMove.To, (int)triedPiece, tried.To] += malus;
+                                        UpdateHistory(ref ContinuationHistory[(int)pp, prevMove.To, (int)triedPiece, tried.To], malus);
                                 }
                             }
                         }
@@ -363,7 +381,7 @@ namespace ChessEngine
                             ? (board.WhiteToMove ? Piece.BP : Piece.WP)
                             : board.PieceAt(move.To);
                         int capturedType = GetPieceType(victim);
-                        CaptureHistory[(int)attacker, move.To, capturedType] += depth * depth;
+                        UpdateHistory(ref CaptureHistory[(int)attacker, move.To, capturedType], depth * depth);
                     }
                     PreviousMove = prevMove;
                     return beta;
@@ -380,14 +398,14 @@ namespace ChessEngine
                         {
                             piece = board.PieceAt(move.To);
                         }
-                        History[(int)piece, move.To] += depth;
+                        UpdateHistory(ref History[(int)piece, move.To], depth);
                         
                         if (prevMove.From != prevMove.To)
                         {
                             Piece prevPiece = board.PieceAt(prevMove.To);
                             if (prevPiece != Piece.Empty)
                             {
-                                ContinuationHistory[(int)prevPiece, prevMove.To, (int)piece, move.To] += depth;
+                                UpdateHistory(ref ContinuationHistory[(int)prevPiece, prevMove.To, (int)piece, move.To], depth);
                             }
                         }
                     }
@@ -398,7 +416,7 @@ namespace ChessEngine
                             ? (board.WhiteToMove ? Piece.BP : Piece.WP)
                             : board.PieceAt(move.To);
                         int capturedType = GetPieceType(victim);
-                        CaptureHistory[(int)attacker, move.To, capturedType] += depth;
+                        UpdateHistory(ref CaptureHistory[(int)attacker, move.To, capturedType], depth);
                     }
                 }
             }

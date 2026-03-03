@@ -7,6 +7,8 @@ namespace ChessEngine
         private const int MaxAttackWeight = 10;
         private const int PawnStormPhaseThreshold = 12;
 
+        private static readonly int[] KingSafetyTable = { 0, 3, 10, 22, 40, 55, 72, 90, 110, 130, 155 };
+
         private static void EvaluateKingSafety(Board board, ref int mgScore, int phase)
         {
             if (board.WQ == 0 && board.BQ == 0)
@@ -49,7 +51,7 @@ namespace ChessEngine
             int attackWeight = CountAttackWeight(board, zone, !white);
             int defenseWeight = CountAttackWeight(board, zone, white);
             int netAttack = Math.Min(MaxAttackWeight, Math.Max(0, attackWeight - defenseWeight));
-            score -= (netAttack * netAttack * P.KingAttackWeightPenalty) / 4;
+            score -= KingSafetyTable[netAttack];
 
             ulong shieldMask = Bitboard.KingAttacks[kingSq];
             if (white)

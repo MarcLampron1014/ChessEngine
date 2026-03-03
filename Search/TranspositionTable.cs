@@ -207,6 +207,44 @@ namespace ChessEngine
             }
         }
 
+        public bool TryProbeScore(ulong hash, int ply, out int score, out TTFlag flag)
+        {
+            int bucket = (int)(hash & _mask);
+            int baseIdx = bucket * 2;
+            object bucketLock = _locks[bucket & LockMask];
+            lock (bucketLock)
+            {
+                ref TTEntry e0 = ref _table[baseIdx];
+                ref TTEntry e1 = ref _table[baseIdx + 1];
+
+                ref TTEntry entry = ref e0;
+                if (e0.Hash != hash)
+                {
+                    if (e1.Hash != hash)
+                    {
+                        score = 0;
+                        flag = TTFlag.None;
+                        return false;
+                    }
+                    entry = ref e1;
+                }
+                else if (e1.Hash == hash && e1.Depth > e0.Depth)
+                {
+                    entry = ref e1;
+                }
+
+                int ttScore = entry.Score;
+                if (ttScore > MateThreshold)
+                    ttScore -= ply;
+                else if (ttScore < -MateThreshold)
+                    ttScore += ply;
+
+                score = ttScore;
+                flag = entry.Flag;
+                return true;
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Move GetTTMove(ulong hash)
         {
