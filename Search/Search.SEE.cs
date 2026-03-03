@@ -1,9 +1,12 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace ChessEngine
 {
     public static partial class Search
     {
+        private static readonly int[] SEEPieceValues = { 0, 100, 320, 330, 500, 900, 20000, 100, 320, 330, 500, 900, 20000 };
+
         private static int SEE(Board board, Move move)
         {
             if (!move.IsCapture)
@@ -15,82 +18,89 @@ namespace ChessEngine
             Piece victim = move.IsEnPassant
                 ? (board.WhiteToMove ? Piece.BP : Piece.WP)
                 : board.PieceAt(to);
-            
+
             if (victim == Piece.Empty)
                 return 0;
 
             Piece attacker = board.PieceAt(from);
-            int attackerValue = GetSEEPieceValue(attacker);
-            int victimValue = GetSEEPieceValue(victim);
 
-            if (attackerValue <= victimValue)
-                return victimValue - attackerValue;
+            int[] gain = GainArray;
+            int depth = 0;
 
-            ulong occupied = board.AllPieces ^ Bitboard.SquareBB[from];
+            ulong occupied = board.AllPieces;
             if (move.IsEnPassant)
             {
                 int epCaptureSq = board.WhiteToMove ? to - 8 : to + 8;
                 occupied ^= Bitboard.SquareBB[epCaptureSq];
             }
 
-            ulong attackers = board.AttackersTo(to, occupied) & occupied;
-            attackers &= ~Bitboard.SquareBB[from];
+            ulong fromBB = Bitboard.SquareBB[from];
 
-            ulong defenders = attackers & (board.WhiteToMove ? board.BlackPieces : board.WhitePieces);
+            gain[depth] = SEEPieceValues[(int)victim];
 
-            if (defenders == 0)
-                return victimValue;
+            bool sideToMove = !board.WhiteToMove;
 
-            int minDefenderValue = GetMinAttackerValue(defenders, board, !board.WhiteToMove);
+            do
+            {
+                depth++;
+                gain[depth] = SEEPieceValues[(int)attacker] - gain[depth - 1];
 
-            if (attackerValue > victimValue + minDefenderValue)
-                return victimValue - attackerValue;
+                if (Math.Max(-gain[depth - 1], gain[depth]) < 0)
+                    break;
 
-            ulong ourAttackers = attackers & (board.WhiteToMove ? board.WhitePieces : board.BlackPieces);
-            int ourAttackerCount = Bitboard.PopCount(ourAttackers);
-            int theirDefenderCount = Bitboard.PopCount(defenders);
+                occupied ^= fromBB;
 
-            if (ourAttackerCount > theirDefenderCount)
-                return victimValue - attackerValue + 50;
+                ulong attackers = board.AttackersTo(to, occupied) & occupied;
 
-            return victimValue - attackerValue;
+                ulong sideAttackers = attackers & (sideToMove ? board.WhitePieces : board.BlackPieces);
+                if (sideAttackers == 0)
+                    break;
+
+                attacker = GetLeastValuableAttacker(sideAttackers, board, sideToMove, out fromBB);
+                sideToMove = !sideToMove;
+            } while (true);
+
+            while (--depth > 0)
+            {
+                gain[depth - 1] = -Math.Max(-gain[depth - 1], gain[depth]);
+            }
+
+            return gain[0];
+        }
+
+        [ThreadStatic]
+        private static int[]? _gainArray;
+        private static int[] GainArray => _gainArray ??= new int[33];
+
+        private static Piece GetLeastValuableAttacker(ulong attackers, Board board, bool white, out ulong fromBB)
+        {
+            if (white)
+            {
+                ulong bb;
+                bb = attackers & board.WP; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.WP; }
+                bb = attackers & board.WN; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.WN; }
+                bb = attackers & board.WB; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.WB; }
+                bb = attackers & board.WR; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.WR; }
+                bb = attackers & board.WQ; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.WQ; }
+                bb = attackers & board.WK; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.WK; }
+            }
+            else
+            {
+                ulong bb;
+                bb = attackers & board.BP; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.BP; }
+                bb = attackers & board.BN; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.BN; }
+                bb = attackers & board.BB; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.BB; }
+                bb = attackers & board.BR; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.BR; }
+                bb = attackers & board.BQ; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.BQ; }
+                bb = attackers & board.BK; if (bb != 0) { fromBB = bb & (ulong)-(long)bb; return Piece.BK; }
+            }
+            fromBB = 0;
+            return Piece.Empty;
         }
 
         private static int GetSEEPieceValue(Piece p)
         {
-            return p switch
-            {
-                Piece.WP or Piece.BP => 100,
-                Piece.WN or Piece.BN => 320,
-                Piece.WB or Piece.BB => 330,
-                Piece.WR or Piece.BR => 500,
-                Piece.WQ or Piece.BQ => 900,
-                Piece.WK or Piece.BK => 20000,
-                _ => 0
-            };
-        }
-
-        private static int GetMinAttackerValue(ulong attackers, Board board, bool white)
-        {
-            if (white)
-            {
-                if ((attackers & board.WP) != 0) return 100;
-                if ((attackers & board.WN) != 0) return 320;
-                if ((attackers & board.WB) != 0) return 330;
-                if ((attackers & board.WR) != 0) return 500;
-                if ((attackers & board.WQ) != 0) return 900;
-                if ((attackers & board.WK) != 0) return 20000;
-            }
-            else
-            {
-                if ((attackers & board.BP) != 0) return 100;
-                if ((attackers & board.BN) != 0) return 320;
-                if ((attackers & board.BB) != 0) return 330;
-                if ((attackers & board.BR) != 0) return 500;
-                if ((attackers & board.BQ) != 0) return 900;
-                if ((attackers & board.BK) != 0) return 20000;
-            }
-            return 20000;
+            return SEEPieceValues[(int)p];
         }
     }
 }

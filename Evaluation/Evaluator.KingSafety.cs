@@ -49,7 +49,7 @@ namespace ChessEngine
             int attackWeight = CountAttackWeight(board, zone, !white);
             int defenseWeight = CountAttackWeight(board, zone, white);
             int netAttack = Math.Min(MaxAttackWeight, Math.Max(0, attackWeight - defenseWeight));
-            score -= netAttack * P.KingAttackWeightPenalty;
+            score -= (netAttack * netAttack * P.KingAttackWeightPenalty) / 4;
 
             ulong shieldMask = Bitboard.KingAttacks[kingSq];
             if (white)

@@ -19,7 +19,8 @@ namespace ChessEngine
         private static Task? _searchTask;
         private static Board? _goBoard;
         private static int _numThreads = DefaultThreads;
-        private static bool _inPonderMode;
+        private static volatile bool _inPonderMode;
+        private static int _bestMoveSent;
 
         public static void Run()
         {
@@ -95,12 +96,13 @@ namespace ChessEngine
                         if (_inPonderMode)
                         {
                             _inPonderMode = false;
-                            SendBestMoveFromLastResult(_goBoard, Search.GetLastResult());
+                            TrySendBestMove(_goBoard, Search.GetLastResult());
                         }
                         break;
                     case "ponderhit":
                         _inPonderMode = false;
-                        SendBestMoveFromLastResult(_goBoard, Search.GetLastResult());
+                        if (_searchTask != null && _searchTask.IsCompleted)
+                            TrySendBestMove(_goBoard, Search.GetLastResult());
                         break;
                     case "quit":
                         Search.RequestStop();
@@ -221,6 +223,7 @@ namespace ChessEngine
 
             _inPonderMode = ponder;
             _goBoard = board;
+            Interlocked.Exchange(ref _bestMoveSent, 0);
             InitializeTimeManager(board, movetime, wtime, btime, winc, binc, movestogo, infinite);
 
             // Try opening book before search
@@ -235,23 +238,26 @@ namespace ChessEngine
                 return;
             }
 
+            var searchBoard = new Board();
+            Fen.Load(searchBoard, Fen.Generate(board));
+
             _searchTask = Task.Run(() =>
             {
                 try
                 {
-                    var result = Search.FindBestMove(board, _timeManager, maxDepth: 64, numThreads: _numThreads);
+                    var result = Search.FindBestMove(searchBoard, _timeManager, maxDepth: 64, numThreads: _numThreads);
                     if (!_inPonderMode)
-                        SendBestMoveFromLastResult(board, result);
+                        TrySendBestMove(searchBoard, result);
                 }
                 catch (SearchTimeoutException)
                 {
                     if (!_inPonderMode)
-                        SendBestMoveFromLastResult(board, Search.GetLastResult());
+                        TrySendBestMove(searchBoard, Search.GetLastResult());
                 }
                 catch (Exception)
                 {
                     if (!_inPonderMode)
-                        SendBestMoveFromLastResult(board, Search.GetLastResult());
+                        TrySendBestMove(searchBoard, Search.GetLastResult());
                 }
             });
         }
@@ -280,10 +286,14 @@ namespace ChessEngine
                         break;
                     }
                 }
-                if (!found && legal.Count > 0)
-                    best = legal[0];
-                if (legal.Count == 0)
-                    best = default;
+                if (!found)
+                {
+                    string fen = Fen.Generate(board);
+                    string searchMove = best.From != best.To ? best.ToString() : "(none)";
+                    Console.Error.WriteLine($"WARNING: search move {searchMove} not in legal moves for {fen}");
+                    if (legal.Count == 0 || (best.From == best.To && best.Promotion == Piece.Empty))
+                        best = default;
+                }
             }
 
             string bestStr = best.From == best.To && best.Promotion == Piece.Empty ? "0000" : best.ToString();
@@ -296,6 +306,12 @@ namespace ChessEngine
             {
                 WriteLineFlush($"bestmove {bestStr}");
             }
+        }
+
+        private static void TrySendBestMove(Board? board, SearchResult? result = null)
+        {
+            if (Interlocked.CompareExchange(ref _bestMoveSent, 1, 0) == 0)
+                SendBestMoveFromLastResult(board, result);
         }
 
         private static void InitializeTimeManager(Board board, int movetime, int wtime, int btime,

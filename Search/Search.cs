@@ -22,7 +22,10 @@ namespace ChessEngine
         private static SearchResult _lastResult;
 
         public static void RequestStop() => _stopRequested = true;
-        public static SearchResult GetLastResult() => _lastResult;
+        public static SearchResult GetLastResult()
+        {
+            lock (_resultLock) { return _lastResult; }
+        }
 
         private static readonly ThreadLocal<Move[,]> _killerMovesTls = new ThreadLocal<Move[,]>(() => new Move[MaxPly, 2]);
         private static readonly ThreadLocal<int[,]> _historyTableTls = new ThreadLocal<int[,]>(() => new int[13, 64]);
@@ -53,6 +56,10 @@ namespace ChessEngine
         private static long _lmrResearches;
 
         private static readonly int[] LMPThresholds = { 0, 10, 14, 18, 22, 26, 30 };
+        private const int TriedQuietsMax = 64;
+        [ThreadStatic]
+        private static Move[]? _triedQuietsBuffer;
+        private static Move[] TriedQuietsBuffer => _triedQuietsBuffer ??= new Move[TriedQuietsMax];
 
         private static readonly object _resultLock = new object();
         private static int _bestDepthReached;
@@ -81,7 +88,12 @@ namespace ChessEngine
                     }
                 }
                 Array.Clear(Counters, 0, Counters.Length);
-                Array.Clear(ContinuationHistory, 0, ContinuationHistory.Length);
+                var ch = ContinuationHistory;
+                for (int a = 0; a < ch.GetLength(0); a++)
+                    for (int b = 0; b < ch.GetLength(1); b++)
+                        for (int c = 0; c < ch.GetLength(2); c++)
+                            for (int d = 0; d < ch.GetLength(3); d++)
+                                ch[a, b, c, d] /= 2;
                 for (int i = 0; i < CaptureHistory.GetLength(0); i++)
                 {
                     for (int j = 0; j < CaptureHistory.GetLength(1); j++)

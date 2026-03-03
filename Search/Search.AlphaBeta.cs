@@ -50,7 +50,7 @@ namespace ChessEngine
             }
 
             bool inCheck = board.IsKingInCheck(board.WhiteToMove);
-            if (inCheck && depth <= 8)
+            if (inCheck)
             {
                 depth++;
             }
@@ -71,10 +71,17 @@ namespace ChessEngine
                 }
             }
 
-            int quickEval = Evaluator.QuickEvaluate(board);
-            int staticEval = depth >= 3 ? Evaluator.Evaluate(board) : quickEval;
+            int staticEval = Evaluator.Evaluate(board);
 
             const int LosingMargin = 200;
+            const int ReverseFutilityMarginPerDepth = 80;
+
+            if (!isPV && !inCheck && depth <= 7
+                && staticEval - ReverseFutilityMarginPerDepth * depth >= beta
+                && Math.Abs(beta) < MateScore - 1000)
+            {
+                return staticEval;
+            }
 
             // Razoring
             if (!isPV && !inCheck && depth <= 3)
@@ -180,6 +187,9 @@ namespace ChessEngine
             Move prevMove = PreviousMove;
             var picker = new MovePicker(board, MoveStacks[ply], ttMove, ply, prevMove);
 
+            var triedQuiets = TriedQuietsBuffer;
+            int triedQuietCount = 0;
+
             while (picker.NextMove(out Move move, out _))
             {
                 if (singularSearchInProgress && MovesEqual(move, excludeMove))
@@ -247,15 +257,24 @@ namespace ChessEngine
                 }
                 int newDepth = depth - 1 + extension;
 
+                bool isBadCapture = move.IsCapture && !move.IsPromotion && SEE(board, move) < 0;
+
+                if (isQuiet && triedQuietCount < TriedQuietsMax)
+                {
+                    triedQuiets[triedQuietCount++] = move;
+                }
+
                 PreviousMove = move;
                 board.MakeMove(move);
                 bool givesCheck = board.IsKingInCheck(board.WhiteToMove);
 
-                // LMR
+                // LMR: apply to quiet moves and also to bad captures
                 int reduction = 0;
-                if (depth >= 3 && movesSearched >= 3 && !isPV && isQuiet && !inCheck && !givesCheck && !isRecapture)
+                if (depth >= 3 && movesSearched >= 3 && !isPV && (isQuiet || isBadCapture) && !inCheck && !givesCheck && !isRecapture)
                 {
                     reduction = 1 + (depth / 5) + (movesSearched / 8);
+                    if (isBadCapture)
+                        reduction = Math.Max(1, reduction - 1);
                     reduction = Math.Min(reduction, depth - 2);
                 }
 
@@ -314,6 +333,26 @@ namespace ChessEngine
                             if (prevPiece != Piece.Empty)
                             {
                                 ContinuationHistory[(int)prevPiece, prevMove.To, (int)piece, move.To] += depth * depth;
+                            }
+                        }
+
+                        int malus = -(depth * depth);
+                        for (int qi = 0; qi < triedQuietCount - 1; qi++)
+                        {
+                            Move tried = triedQuiets[qi];
+                            Piece triedPiece = board.PieceAt(tried.From);
+                            if (triedPiece == Piece.Empty)
+                                triedPiece = board.PieceAt(tried.To);
+                            if (triedPiece != Piece.Empty)
+                            {
+                                History[(int)triedPiece, tried.To] += malus;
+
+                                if (prevMove.From != prevMove.To)
+                                {
+                                    Piece pp = board.PieceAt(prevMove.To);
+                                    if (pp != Piece.Empty)
+                                        ContinuationHistory[(int)pp, prevMove.To, (int)triedPiece, tried.To] += malus;
+                                }
                             }
                         }
                     }
@@ -387,6 +426,14 @@ namespace ChessEngine
                 return 0;
             }
 
+            bool isPV = beta - alpha > 1;
+
+            if (_tt.Probe(board.ZobristHash, 0, alpha, beta, ply, out int ttScore, out Move ttMove))
+            {
+                if (!isPV)
+                    return ttScore;
+            }
+
             bool inCheck = board.IsKingInCheck(board.WhiteToMove);
             int standPat = Evaluator.Evaluate(board);
 
@@ -401,8 +448,11 @@ namespace ChessEngine
                     return -MateScore + ply;
                 }
                 
-                OrderMoves(board, moves, moveCount, default, qPly);
-                
+                OrderMoves(board, moves, moveCount, ttMove, qPly);
+
+                int origAlpha = alpha;
+                Move bestMove = default;
+
                 for (int i = 0; i < moveCount; i++)
                 {
                     Move move = moves[i];
@@ -412,18 +462,23 @@ namespace ChessEngine
 
                     if (score >= beta)
                     {
+                        _tt.Store(board.ZobristHash, 0, beta, TTFlag.Beta, move, ply);
                         return beta;
                     }
                     if (score > alpha)
                     {
                         alpha = score;
+                        bestMove = move;
                     }
                 }
+                TTFlag flag = alpha > origAlpha ? TTFlag.Exact : TTFlag.Alpha;
+                _tt.Store(board.ZobristHash, 0, alpha, flag, bestMove, ply);
                 return alpha;
             }
 
             if (standPat >= beta)
             {
+                _tt.Store(board.ZobristHash, 0, beta, TTFlag.Beta, default, ply);
                 return beta;
             }
             if (standPat > alpha)
@@ -431,13 +486,16 @@ namespace ChessEngine
                 alpha = standPat;
             }
 
+            int origAlpha2 = alpha;
+            Move bestCapture = default;
+
             int qPly2 = Math.Min(ply, MaxPly - 1);
             Move[] captureMoves = MoveStacks[qPly2];
             int noisyCount = MoveGenerator.GenerateLegalCaptures(board, captureMoves);
 
             if (noisyCount > 0)
             {
-                OrderMoves(board, captureMoves, noisyCount, default, qPly2);
+                OrderMoves(board, captureMoves, noisyCount, ttMove, qPly2);
             }
 
             const int DeltaMargin = 350;
@@ -473,10 +531,19 @@ namespace ChessEngine
                 board.UndoMove(move);
 
                 if (score >= beta)
+                {
+                    _tt.Store(board.ZobristHash, 0, beta, TTFlag.Beta, move, ply);
                     return beta;
+                }
                 if (score > alpha)
+                {
                     alpha = score;
+                    bestCapture = move;
+                }
             }
+
+            if (alpha > origAlpha2)
+                _tt.Store(board.ZobristHash, 0, alpha, TTFlag.Exact, bestCapture, ply);
 
             return alpha;
         }

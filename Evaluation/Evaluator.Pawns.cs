@@ -1,15 +1,67 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace ChessEngine
 {
+    public struct PawnHashEntry
+    {
+        public ulong Key;
+        public int MgScore;
+        public int EgScore;
+        public ulong WPassedPawns;
+        public ulong BPassedPawns;
+    }
+
     public static partial class Evaluator
     {
+        private const int PawnHashSize = 1 << 14;
+        private const ulong PawnHashMask = PawnHashSize - 1;
+        private static readonly ThreadLocal<PawnHashEntry[]> _pawnHashTls =
+            new ThreadLocal<PawnHashEntry[]>(() => new PawnHashEntry[PawnHashSize]);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong ComputePawnHash(Board board)
+        {
+            ulong h = board.WP * 0x9E3779B97F4A7C15UL;
+            h ^= board.BP * 0x517CC1B727220A95UL;
+            return h;
+        }
+
+        public static void ClearPawnHash()
+        {
+            var table = _pawnHashTls.Value!;
+            Array.Clear(table, 0, PawnHashSize);
+        }
+
         private static void EvaluatePawnStructure(Board board, ref int mgScore, ref int egScore,
             out ulong wPassedPawns, out ulong bPassedPawns)
         {
-            EvaluatePawnStructureSide(board, board.WP, board.BP, true, ref mgScore, ref egScore, out wPassedPawns);
-            EvaluatePawnStructureSide(board, board.BP, board.WP, false, ref mgScore, ref egScore, out bPassedPawns);
+            ulong pawnKey = ComputePawnHash(board);
+            var pawnTable = _pawnHashTls.Value!;
+            ref PawnHashEntry entry = ref pawnTable[(int)(pawnKey & PawnHashMask)];
+
+            if (entry.Key == pawnKey)
+            {
+                mgScore += entry.MgScore;
+                egScore += entry.EgScore;
+                wPassedPawns = entry.WPassedPawns;
+                bPassedPawns = entry.BPassedPawns;
+                return;
+            }
+
+            int mg = 0, eg = 0;
+            EvaluatePawnStructureSide(board, board.WP, board.BP, true, ref mg, ref eg, out wPassedPawns);
+            EvaluatePawnStructureSide(board, board.BP, board.WP, false, ref mg, ref eg, out bPassedPawns);
+
+            entry.Key = pawnKey;
+            entry.MgScore = mg;
+            entry.EgScore = eg;
+            entry.WPassedPawns = wPassedPawns;
+            entry.BPassedPawns = bPassedPawns;
+
+            mgScore += mg;
+            egScore += eg;
         }
 
         private static void EvaluatePawnStructureSide(Board board, ulong friendlyPawns, ulong enemyPawns,
