@@ -22,11 +22,28 @@ namespace ChessEngine
             {
                 if (board.IsRepetition() || board.IsFiftyMoveRule())
                 {
-                    return 0;
+                    return GetDrawScore(board);
                 }
                 if (Evaluator.IsInsufficientMaterial(board))
                 {
-                    return 0;
+                    return GetDrawScore(board);
+                }
+            }
+
+            // Optional tablebase probe in low-material positions (stubbed until a
+            // Syzygy probing implementation is wired into Tablebases.TryProbeWdl).
+            // Use total piece count from AllPieces rather than a non-existent Board.PieceCount.
+            if (Tablebases.IsAvailable && Bitboard.PopCount(board.AllPieces) <= 7)
+            {
+                if (Tablebases.TryProbeWdl(board, out int wdl, out int dtz))
+                {
+                    int tbScore = wdl switch
+                    {
+                        > 0 => MateScore - ply,
+                        < 0 => -MateScore + ply,
+                        _ => GetDrawScore(board)
+                    };
+                    return tbScore;
                 }
             }
 
@@ -437,11 +454,11 @@ namespace ChessEngine
 
             if (board.IsRepetition() || board.IsFiftyMoveRule())
             {
-                return 0;
+                return GetDrawScore(board);
             }
             if (Evaluator.IsInsufficientMaterial(board))
             {
-                return 0;
+                return GetDrawScore(board);
             }
 
             bool isPV = beta - alpha > 1;

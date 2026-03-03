@@ -15,6 +15,11 @@ namespace ChessEngine
         private const int DefaultHashSizeMB = 64;
         private const int TimeCheckInterval = 2047;
 
+        // Contempt value in centipawns. Positive values make the engine
+        // prefer playing on (treating draws as slightly worse than 0),
+        // negative values make draws relatively more attractive.
+        private static int _contempt;
+
         private static readonly TranspositionTable _tt = new TranspositionTable(DefaultHashSizeMB);
         private static TimeManager? _timeManager;
         private static Stopwatch? _sw;
@@ -86,6 +91,26 @@ namespace ChessEngine
         private static Move PreviousMove { get => _previousMoveTls.Value; set => _previousMoveTls.Value = value; }
         private static Move[][] MoveStacks => _moveStacksTls.Value!;
         private static int[] MoveScores => _moveScoresTls.Value!;
+
+        public static void SetContempt(int value)
+        {
+            // Clamp to a reasonable range to avoid destabilizing search.
+            if (value < -400) value = -400;
+            else if (value > 400) value = 400;
+            _contempt = value;
+        }
+
+        private static int GetDrawScore(Board board)
+        {
+            int c = _contempt;
+            if (c == 0)
+            {
+                return 0;
+            }
+            // Evaluation is always from the side-to-move perspective.
+            // Positive contempt makes draws slightly negative for the side to move.
+            return board.WhiteToMove ? -c : c;
+        }
 
         private static void EnsureSearchTablesCurrent()
         {

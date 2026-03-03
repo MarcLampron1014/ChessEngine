@@ -1,13 +1,21 @@
 # ChessEngine
 This is my attempt at making a chess engine from scratch, with the help of a lot of research.
 
-TODO:
-Improve pruning
-Improve evaluation
+## Roadmap / TODO
+
+- [ ] Improve pruning heuristics and search tuning
+- [ ] Improve evaluation (feature coverage, tuning quality)
+- [ ] Endgame databases
+- [ ] Critical positions / contempt handling
+- [ ] SPRT testing
 
 Useful sources:
 https://www.chessprogramming.org/Main_Page
 https://www.chessprogramming.org/Perft_Results
+See also:
+- `docs/SearchTuning.md` for an overview of the engine’s pruning and search parameters and how to tune them safely.
+- `docs/EvalTuning.md` for the full Texel-style evaluation tuning workflow.
+- `docs/SPRT.md` for setting up cutechess-cli based SPRT testing to measure Elo gains from changes.
 
 ## How to use the engine
 
@@ -190,8 +198,4 @@ Marc Lampron
 - [x] Perft testing
 - [x] Evaluation tuning (Texel-style: convert, tune, eval-error, save/load params)
 - [x] Lichess bot mode
-
-**Not yet implemented**
-- [ ] Endgame/opening databases (e.g. Syzygy)
-- [ ] Critical positions / contempt
-- [ ] SPRT testing
+ - [x] Contempt option and stubbed SyzygyPath hook for future tablebases

@@ -50,6 +50,8 @@ namespace ChessEngine
                         WriteLineFlush($"option name BookFile type string default {OpeningBook.BookPath}");
                         WriteLineFlush("option name BookDepth type spin default 36 min 0 max 60");
                         WriteLineFlush("option name BookEvalLimit type spin default -40 min -1000 max 100");
+                        WriteLineFlush("option name Contempt type spin default 0 min -200 max 200");
+                        WriteLineFlush("option name SyzygyPath type string default ");
                         WriteLineFlush("uciok");
                         break;
                     case "isready":
@@ -161,6 +163,15 @@ namespace ChessEngine
                 TryParseInt(optionValue, out int bookEvalLimit))
             {
                 OpeningBook.BookEvalLimit = bookEvalLimit;
+            }
+            else if (optionName.Equals("Contempt", StringComparison.OrdinalIgnoreCase) &&
+                     TryParseInt(optionValue, out int contempt))
+            {
+                Search.SetContempt(contempt);
+            }
+            else if (optionName.Equals("SyzygyPath", StringComparison.OrdinalIgnoreCase))
+            {
+                Tablebases.SetSyzygyPath(optionValue);
             }
         }
 
