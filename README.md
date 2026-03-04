@@ -198,4 +198,4 @@ Marc Lampron
 - [x] Perft testing
 - [x] Evaluation tuning (Texel-style: convert, tune, eval-error, save/load params)
 - [x] Lichess bot mode
- - [x] Contempt option and stubbed SyzygyPath hook for future tablebases
+- [x] Contempt option and stubbed SyzygyPath hook for future tablebases

@@ -54,6 +54,10 @@ Notes:
 - **DataLoader workers**: Raise `--num-workers` to fully feed the GPU; the loader uses persistent workers and pinned memory when `num-workers > 0`.
 - **Epochs**: Start with fewer epochs (e.g. 2–3) and only extend if validation RMSE keeps improving.
 
+
+To parse data:
+python parallel_build_index.py C:\Users\marcl\ChessEngine\datasets\cleaned\positions_nnue_202601.txt --val-permille 50 --jobs 12 --chunk-size 268435456
+
 Copy Paste ca: 
 python -m nnue_train.train C:\Users\marcl\ChessEngine\datasets\cleaned\positions_nnue_202601.txt --batch-size 32768 --epochs 3 --lr 1e-3 --cp-clamp 1500 --cp-scale 400.0 --clip-max 1.0 --val-permille 50 --num-workers 12 --device cuda --out-dir nnue_checkpoints
 
