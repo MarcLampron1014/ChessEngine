@@ -32,19 +32,33 @@ pip install -r nnue_train/requirements.txt
 
 ### Training
 
+For a fast GPU setup (e.g. RTX-class card, dataset on SSD), start with:
+
 ```bash
-python -m nnue_train.train path/to/dataset.txt \
-  --batch-size 8192 \
-  --epochs 5 \
-  --lr 1e-3 \
-  --cp-clamp 1500 \
-  --cp-scale 400.0 \
-  --clip-max 1.0 \
-  --val-permille 50 \
-  --num-workers 4 \
-  --device cuda \
+python -m nnue_train.train C:\Users\marcl\ChessEngine\datasets\positions_nnue.txt ^
+  --batch-size 16384 ^
+  --epochs 3 ^
+  --lr 1e-3 ^
+  --cp-clamp 1500 ^
+  --cp-scale 400.0 ^
+  --clip-max 1.0 ^
+  --val-permille 50 ^
+  --num-workers 8 ^
+  --device cuda ^
   --out-dir nnue_checkpoints
 ```
+
+Notes:
+
+- **Batch size**: Increase `--batch-size` (e.g. 16384, 32768) until you approach your GPU memory limit; larger batches improve throughput.
+- **DataLoader workers**: Raise `--num-workers` to fully feed the GPU; the loader uses persistent workers and pinned memory when `num-workers > 0`.
+- **Epochs**: Start with fewer epochs (e.g. 2–3) and only extend if validation RMSE keeps improving.
+
+Copy Paste ca: 
+python -m nnue_train.train C:\Users\marcl\ChessEngine\datasets\cleaned\positions_nnue_202601.txt --batch-size 32768 --epochs 3 --lr 1e-3 --cp-clamp 1500 --cp-scale 400.0 --clip-max 1.0 --val-permille 50 --num-workers 12 --device cuda --out-dir nnue_checkpoints
+
+python -m nnue_train.train C:\Users\marcl\ChessEngine\datasets\cleaned\positions_nnue_202501.txt --batch-size 32768 --epochs 3 --lr 1e-3 --cp-clamp 1500 --cp-scale 400.0 --clip-max 1.0 --val-permille 50 --num-workers 12 --device cuda --out-dir nnue_checkpoints
+
 
 This will:
 
@@ -55,6 +69,11 @@ This will:
 - Save checkpoints and export a flat text weight file:
   - `nnue_checkpoints/nnue_weights.txt`
   - `nnue_checkpoints/nnue_weights_meta.json`
+
+For quick experiments on very large datasets, you can:
+
+- Create a smaller subset of positions (e.g. by sampling lines from `positions_nnue.txt`) and train on that while tuning hyperparameters.
+- Keep the full dataset text file and its `.nnue` index `.npy` files on a fast local SSD for best training throughput.
 
 ### Golden FEN test
 

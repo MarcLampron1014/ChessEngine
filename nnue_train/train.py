@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 from pathlib import Path
 from typing import Tuple
 
@@ -31,6 +32,11 @@ def _parse_args() -> TrainingConfig:
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--out-dir", type=Path, default=Path("nnue_checkpoints"))
     parser.add_argument("--clip-max", type=float, default=1.0, help="Clipped ReLU maximum.")
+    parser.add_argument(
+        "--small-model",
+        action="store_true",
+        help="Use a smaller NNUE (reduced hidden dims) for faster experiments.",
+    )
 
     args = parser.parse_args()
 
@@ -51,6 +57,10 @@ def _parse_args() -> TrainingConfig:
         out_dir=args.out_dir,
     )
 
+    # Attach non-TrainingConfig flags used for model size tuning.
+    # These are stored on the config object so they are visible in checkpoints.
+    cfg.small_model = args.small_model  # type: ignore[attr-defined]
+
     return cfg
 
 
@@ -70,6 +80,8 @@ def _create_dataloaders(cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
         val_permille=cfg.val_permille,
     )
 
+    persistent = cfg.num_workers > 0
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
@@ -77,6 +89,7 @@ def _create_dataloaders(cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
         num_workers=cfg.num_workers,
         pin_memory=True,
         collate_fn=collate_embedding_bag,
+        persistent_workers=persistent,
     )
     val_loader = DataLoader(
         val_ds,
@@ -85,6 +98,7 @@ def _create_dataloaders(cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
         num_workers=cfg.num_workers,
         pin_memory=True,
         collate_fn=collate_embedding_bag,
+        persistent_workers=persistent,
     )
     return train_loader, val_loader
 
@@ -97,6 +111,11 @@ def train() -> None:
     device = torch.device("cuda" if use_cuda else "cpu")
 
     model_cfg = ModelConfig(clip_max=cfg.clip_max)
+    # Optionally shrink the model for faster experiments.
+    if getattr(cfg, "small_model", False):
+        model_cfg.hidden_dim = 192
+        model_cfg.hidden_dim2 = 24
+
     model = NnueModel(model_cfg).to(device)
 
     optimizer = torch.optim.Adam(
@@ -119,6 +138,7 @@ def train() -> None:
 
     global_step = 0
     for epoch in range(1, cfg.num_epochs + 1):
+        epoch_start = time.perf_counter()
         model.train()
         running_loss = 0.0
         running_count = 0
@@ -176,10 +196,16 @@ def train() -> None:
                 val_loss += float(loss.item()) * batch_size
                 val_count += batch_size
 
+        epoch_seconds = time.perf_counter() - epoch_start
+
         mean_val_loss = val_loss / max(1, val_count)
         rmse_norm = math.sqrt(mean_val_loss)
         rmse_cp = rmse_norm * cfg.cp_scale
-        print(f"Epoch {epoch} Validation MSE={mean_val_loss:.6f} RMSE_cp={rmse_cp:.2f}")
+        print(
+            f"Epoch {epoch} "
+            f"Validation MSE={mean_val_loss:.6f} RMSE_cp={rmse_cp:.2f} "
+            f"(epoch_time={epoch_seconds:.1f}s)"
+        )
 
         # Checkpoint
         ckpt_path = cfg.out_dir / f"nnue_epoch{epoch}.pt"
