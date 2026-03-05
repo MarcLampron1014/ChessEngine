@@ -107,9 +107,11 @@ class FenCpTextDataset(Dataset):
         FEN | centipawn_score
 
     This implementation uses:
-    - A cached array of byte offsets per line.
-    - A memory-mapped view of the file for random access.
-    - Pre-computed train/val index lists using a hash of the FEN string.
+    - Cached .npy index files (offsets, train_idx, val_idx) built by build_or_load_index.
+    - Memory-mapped access to the data file and index files, opened per worker.
+
+    Index arrays are not stored on the dataset instance so that the object stays
+    small when pickled for DataLoader workers on Windows (avoids "pickle data truncated").
     """
 
     def __init__(
@@ -128,30 +130,35 @@ class FenCpTextDataset(Dataset):
         self.cp_clamp = int(cp_clamp)
         self.cp_scale = float(cp_scale)
 
-        offsets, train_idx, val_idx = build_or_load_index(data_path, val_permille)
-        self._offsets = offsets
-        self._line_indices = train_idx if split == "train" else val_idx
+        idx_files = _index_paths(data_path)
+        self._offsets_path = idx_files.offsets_path
+        self._line_indices_path = (
+            idx_files.train_idx_path if split == "train" else idx_files.val_idx_path
+        )
 
-        # Lazily initialised file handle / mmap, created per worker process.
+        # Lazily set in worker: file handle, data mmap, index arrays (mmap).
         self._fp = None
         self._mm = None
+        self._offsets = None
+        self._line_indices = None
+        self._len: int | None = None
 
     def _ensure_mmap(self) -> None:
         """
-        Lazily open the dataset file and memory-map it.
-
-        This avoids having an open file handle when the Dataset is pickled
-        for DataLoader worker processes on Windows.
+        Lazily open the data file and index .npy files (memory-mapped) in this process.
+        Called in each DataLoader worker so only small paths are pickled.
         """
-
         if self._mm is None or self._fp is None:
-            fp = self.data_path.open("rb")
-            mm = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
-            self._fp = fp
-            self._mm = mm
+            self._fp = self.data_path.open("rb")
+            self._mm = mmap.mmap(self._fp.fileno(), 0, access=mmap.ACCESS_READ)
+            self._offsets = np.load(self._offsets_path, mmap_mode="r")
+            self._line_indices = np.load(self._line_indices_path, mmap_mode="r")
 
     def __len__(self) -> int:
-        return int(self._line_indices.shape[0])
+        if self._len is None:
+            arr = np.load(self._line_indices_path, mmap_mode="r")
+            self._len = int(arr.shape[0])
+        return self._len
 
     def __getitem__(self, idx: int) -> Tuple[List[int], float]:
         self._ensure_mmap()
@@ -172,8 +179,8 @@ class FenCpTextDataset(Dataset):
         except ValueError as exc:
             raise ValueError(f"Invalid line format (expected 'FEN | cp'): {line!r}") from exc
 
-        fen = fen_bytes.decode("utf-8").strip()
-        cp_str = cp_bytes.decode("utf-8").strip()
+        fen = fen_bytes.decode("utf-8-sig").strip()
+        cp_str = cp_bytes.decode("utf-8-sig").strip()
 
         try:
             cp = int(cp_str)
@@ -187,6 +194,8 @@ class FenCpTextDataset(Dataset):
         return indices, float(target)
 
     def close(self) -> None:
+        self._offsets = None
+        self._line_indices = None
         if self._mm is not None:
             self._mm.close()
             self._mm = None

@@ -1,71 +1,23 @@
+# continue_train_part2.py
 from __future__ import annotations
 
-import argparse
+from pathlib import Path
 import math
 import time
-from pathlib import Path
 from typing import Tuple
 
 import torch
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
-from .config import ModelConfig, TrainingConfig
-from .data import FenCpTextDataset, build_or_load_index, collate_embedding_bag
-from .export import export_txt
-from .model import NnueModel
-
-
-def _parse_args() -> TrainingConfig:
-    parser = argparse.ArgumentParser(description="Train NNUE (HalfKP dual-king) for ChessEngine.")
-    parser.add_argument("data_path", type=Path, help="Path to training data file (FEN | cp).")
-    parser.add_argument("--batch-size", type=int, default=8192)
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--cp-clamp", type=int, default=1500)
-    parser.add_argument("--cp-scale", type=float, default=400.0)
-    parser.add_argument("--val-permille", type=int, default=50, help="Validation share in permille (50 => 5%).")
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--log-interval", type=int, default=100)
-    parser.add_argument("--out-dir", type=Path, default=Path("nnue_checkpoints"))
-    parser.add_argument("--clip-max", type=float, default=1.0, help="Clipped ReLU maximum.")
-    parser.add_argument(
-        "--small-model",
-        action="store_true",
-        help="Use a smaller NNUE (reduced hidden dims) for faster experiments.",
-    )
-
-    args = parser.parse_args()
-
-    cfg = TrainingConfig(
-        data_path=args.data_path,
-        batch_size=args.batch_size,
-        num_epochs=args.epochs,
-        learning_rate=args.lr,
-        weight_decay=args.weight_decay,
-        cp_clamp=args.cp_clamp,
-        cp_scale=args.cp_scale,
-        val_permille=args.val_permille,
-        num_workers=args.num_workers,
-        device=args.device,
-        seed=args.seed,
-        clip_max=args.clip_max,
-        log_interval=args.log_interval,
-        out_dir=args.out_dir,
-    )
-
-    # Attach non-TrainingConfig flags used for model size tuning.
-    # These are stored on the config object so they are visible in checkpoints.
-    cfg.small_model = args.small_model  # type: ignore[attr-defined]
-
-    return cfg
+from nnue_train.config import TrainingConfig, ModelConfig
+from nnue_train.data import FenCpTextDataset, collate_embedding_bag, build_or_load_index
+from nnue_train.export import export_txt
+from nnue_train.model import NnueModel
 
 
 def _create_dataloaders(cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
-    # Ensure index .npy files exist before creating datasets (dataset only stores paths).
+    # Ensure index files for this new data_path exist
     build_or_load_index(cfg.data_path, cfg.val_permille)
 
     train_ds = FenCpTextDataset(
@@ -106,31 +58,50 @@ def _create_dataloaders(cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
     return train_loader, val_loader
 
 
-def train() -> None:
-    cfg = _parse_args()
+def main() -> None:
+    # 1) Load checkpoint from part 1 (use full epoch checkpoint, not nnue_best.pt)
+    ckpt_path = Path("nnue_checkpoints/nnue_epoch3.pt")
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+
+    # 2) Build TrainingConfig for part 2 using original config + overrides
+    cfg_dict = ckpt["training_config"].copy()
+    # Remove helper flag not part of TrainingConfig signature
+    cfg_dict.pop("small_model", None)
+    cfg_dict["data_path"] = Path(
+        r"C:\Users\marcl\ChessEngine\datasets\cleaned\positions_fishtest_part2.txt"
+    )
+    # How many epochs you want to run on part 2:
+    cfg_dict["num_epochs"] = 3   # or more/less as you like
+
+    cfg = TrainingConfig(**cfg_dict)
+
     torch.manual_seed(cfg.seed)
 
     use_cuda = torch.cuda.is_available() and cfg.device == "cuda"
     device = torch.device("cuda" if use_cuda else "cpu")
 
+    # 3) Recreate model and load weights
     model_cfg = ModelConfig(clip_max=cfg.clip_max)
-    # Optionally shrink the model for faster experiments.
     if getattr(cfg, "small_model", False):
         model_cfg.hidden_dim = 192
         model_cfg.hidden_dim2 = 24
 
     model = NnueModel(model_cfg).to(device)
+    model.load_state_dict(ckpt["model_state"])
 
+    # 4) Recreate optimizer and scaler, resume their states
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
     )
-    scaler = GradScaler("cuda") if use_cuda else None
+    optimizer.load_state_dict(ckpt["optimizer_state"])
 
-    # On pure CPU training, multiple workers often bring limited benefit and can
-    # interact poorly with some Python versions. In that case it's safer to use
-    # a single worker.
+    scaler = GradScaler("cuda") if use_cuda else None
+    if use_cuda and "scaler_state" in ckpt and ckpt["scaler_state"] is not None:
+        scaler.load_state_dict(ckpt["scaler_state"])
+
+    # 5) Dataloader setup (same logic as in train.py)
     if not use_cuda and cfg.num_workers > 0:
         cfg.num_workers = 0
 
@@ -138,10 +109,11 @@ def train() -> None:
     total_train_samples = len(train_loader.dataset)
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
-    best_val_rmse = math.inf
-
+    best_val_loss = math.inf
     global_step = 0
-    for epoch in range(1, cfg.num_epochs + 1):
+    start_epoch = 1  # fresh count for part 2; you can also store/use ckpt["epoch"] if you want
+
+    for epoch in range(start_epoch, cfg.num_epochs + 1):
         epoch_start = time.perf_counter()
         model.train()
         running_loss = 0.0
@@ -154,10 +126,10 @@ def train() -> None:
 
             optimizer.zero_grad(set_to_none=True)
             if use_cuda:
+                assert scaler is not None
                 with autocast(device_type="cuda", enabled=True):
                     preds = model(indices, offsets)
                     loss = torch.mean((preds - targets) ** 2)
-                assert scaler is not None
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -186,7 +158,7 @@ def train() -> None:
                 running_loss = 0.0
                 running_count = 0
 
-        # Validation
+        # Validation on part 2
         model.eval()
         val_loss = 0.0
         val_count = 0
@@ -204,7 +176,6 @@ def train() -> None:
                 val_count += batch_size
 
         epoch_seconds = time.perf_counter() - epoch_start
-
         mean_val_loss = val_loss / max(1, val_count)
         rmse_norm = math.sqrt(mean_val_loss)
         rmse_cp = rmse_norm * cfg.cp_scale
@@ -214,30 +185,29 @@ def train() -> None:
             f"(epoch_time={epoch_seconds:.1f}s)"
         )
 
-        # Checkpoint
-        ckpt_path = cfg.out_dir / f"nnue_epoch{epoch}.pt"
+        # Save checkpoint for part 2 training
+        ckpt_path_out = cfg.out_dir / f"nnue_part2_epoch{epoch}.pt"
         torch.save(
             {
                 "epoch": epoch,
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
-                "scaler_state": scaler.state_dict(),
+                "scaler_state": scaler.state_dict() if scaler is not None else None,
                 "training_config": cfg.__dict__,
             },
-            ckpt_path,
+            ckpt_path_out,
         )
 
-        if mean_val_loss < best_val_rmse:
-            best_val_rmse = mean_val_loss
-            best_path = cfg.out_dir / "nnue_best.pt"
+        if mean_val_loss < best_val_loss:
+            best_val_loss = mean_val_loss
+            best_path = cfg.out_dir / "nnue_part2_best.pt"
             torch.save(model.state_dict(), best_path)
 
-    # Final export of the last model
-    txt_path = cfg.out_dir / "nnue_weights.txt"
-    meta_path = cfg.out_dir / "nnue_weights_meta.json"
+    # Optionally export final model from part 2 training
+    txt_path = cfg.out_dir / "nnue_part2_weights.txt"
+    meta_path = cfg.out_dir / "nnue_part2_weights_meta.json"
     export_txt(model, txt_path, meta_path, cp_scale=cfg.cp_scale)
 
 
 if __name__ == "__main__":
-    train()
-
+    main()
