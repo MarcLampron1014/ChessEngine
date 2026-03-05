@@ -132,6 +132,7 @@ def train() -> None:
         cfg.num_workers = 0
 
     train_loader, val_loader = _create_dataloaders(cfg)
+    total_train_samples = len(train_loader.dataset)
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     best_val_rmse = math.inf
@@ -172,9 +173,12 @@ def train() -> None:
                 mean_loss = running_loss / max(1, running_count)
                 rmse_norm = math.sqrt(mean_loss)
                 rmse_cp = rmse_norm * cfg.cp_scale
+                samples_done = (batch_idx - 1) * cfg.batch_size + batch_size
+                pct_epoch = 100.0 * min(samples_done, total_train_samples) / total_train_samples
                 print(
                     f"Epoch {epoch} Step {global_step} "
-                    f"Train MSE={mean_loss:.6f} RMSE_cp={rmse_cp:.2f}"
+                    f"Train MSE={mean_loss:.6f} RMSE_cp={rmse_cp:.2f} "
+                    f"({pct_epoch:.1f}% of epoch)"
                 )
                 running_loss = 0.0
                 running_count = 0

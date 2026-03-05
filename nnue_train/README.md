@@ -7,6 +7,7 @@ Python/PyTorch training utilities for an NNUE-style evaluation network for `Ches
 - Input: positions in text format:
   - One position per line: `FEN | centipawn_score`
   - Score is **white POV** (positive means White is better).
+  - To build this from PGNs (e.g. Stockfish test games with `{eval/depth time}` or Lichess with `[%eval ...]`), use the repo-root script: `python convert_pgn_to_nnue.py input.pgn output.txt [--min-depth 18] [--cp-clamp 1500]`. Optional `--min-depth` filters to higher-depth evals only (Stockfish format).
 - Features: dual-king HalfKP:
   - Side-to-move is not used directly; scores are always white POV.
   - Square indexing matches the engine’s PST convention (A1 = 0, H8 = 63).
