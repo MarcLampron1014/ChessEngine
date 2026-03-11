@@ -36,8 +36,6 @@ namespace ChessEngine
         public int DoubledPawnPenalty { get; set; } = -15;
         public int IsolatedPawnPenalty { get; set; } = -20;
         public int BackwardPawnPenalty { get; set; } = -15;
-        public int BlockedPawnPenalty { get; set; } = -12;
-        public int PhalanxBonus { get; set; } = 10;
         public int MobilityBonus { get; set; } = 2;
         public int KingShieldBonus { get; set; } = 10;
         public int KingOpenFilePenalty { get; set; } = 10;
@@ -60,20 +58,6 @@ namespace ChessEngine
 
         // Queen tropism (distance to enemy king)
         public int QueenTropismBonus { get; set; } = 2;
-
-        // Knight tropism (distance to enemy king)
-        public int KnightTropismMG { get; set; } = 3;
-
-        // Opposite-colored bishops (endgame draw tendency)
-        public int OppositeColoredBishopsDrawFactor { get; set; } = 25;
-
-        // Pawn storm bonus by rank (index 0-7 for advancing pawns toward enemy king)
-        public int PawnStormBonus4 { get; set; } = 5;
-        public int PawnStormBonus5 { get; set; } = 10;
-        public int PawnStormBonus6 { get; set; } = 20;
-
-        // Hanging piece penalty (threat detection)
-        public int HangingPiecePenalty { get; set; } = 15;
 
         // King-pawn proximity weights (endgame)
         public int KingOwnPasserProximity { get; set; } = 5;
@@ -301,12 +285,13 @@ namespace ChessEngine
         /// </summary>
         public static EvalParams Instance { get; private set; } = new EvalParams();
 
-        // Parameter bounds — per-parameter sign constraints prevent tuner drift
-        private const int PawnValueMin = 80, PawnValueMax = 130;
-        private const int KnightValueMin = 270, KnightValueMax = 370;
-        private const int BishopValueMin = 270, BishopValueMax = 380;
-        private const int RookValueMin = 450, RookValueMax = 600;
-        private const int QueenValueMin = 850, QueenValueMax = 1050;
+        // Parameter bounds for stable, predictable evaluation
+        private const int PawnValueMin = 80, PawnValueMax = 120;
+        private const int KnightValueMin = 280, KnightValueMax = 360;
+        private const int BishopValueMin = 280, BishopValueMax = 360;
+        private const int RookValueMin = 480, RookValueMax = 550;
+        private const int QueenValueMin = 880, QueenValueMax = 980;
+        private const int BonusPenaltyMin = -50, BonusPenaltyMax = 50;
 
         /// <summary>
         /// Loads parameters from a JSON file.
@@ -352,7 +337,6 @@ namespace ChessEngine
         /// </summary>
         public static void ClampAllParameters(EvalParams p)
         {
-            // Piece values
             p.PawnValueMG = Math.Clamp(p.PawnValueMG, PawnValueMin, PawnValueMax);
             p.PawnValueEG = Math.Clamp(p.PawnValueEG, PawnValueMin, PawnValueMax);
             p.KnightValueMG = Math.Clamp(p.KnightValueMG, KnightValueMin, KnightValueMax);
@@ -364,67 +348,31 @@ namespace ChessEngine
             p.QueenValueMG = Math.Clamp(p.QueenValueMG, QueenValueMin, QueenValueMax);
             p.QueenValueEG = Math.Clamp(p.QueenValueEG, QueenValueMin, QueenValueMax);
 
-            // Bishop pair: always a positive bonus (10-60cp)
-            p.BishopPairBonusMG = Math.Clamp(p.BishopPairBonusMG, 10, 60);
-            p.BishopPairBonusEG = Math.Clamp(p.BishopPairBonusEG, 10, 60);
-
-            // Rook file bonuses: always positive, open >= semi-open
-            p.RookOpenFileBonus = Math.Clamp(p.RookOpenFileBonus, 5, 50);
-            p.RookSemiOpenFileBonus = Math.Clamp(p.RookSemiOpenFileBonus, 0, 50);
-            if (p.RookSemiOpenFileBonus > p.RookOpenFileBonus)
-                p.RookSemiOpenFileBonus = p.RookOpenFileBonus;
-
-            // Pawn structure penalties: always negative
-            p.DoubledPawnPenalty = Math.Clamp(p.DoubledPawnPenalty, -50, 0);
-            p.IsolatedPawnPenalty = Math.Clamp(p.IsolatedPawnPenalty, -50, 0);
-            p.BackwardPawnPenalty = Math.Clamp(p.BackwardPawnPenalty, -50, 0);
-            p.BlockedPawnPenalty = Math.Clamp(p.BlockedPawnPenalty, -50, 0);
-            p.PhalanxBonus = Math.Clamp(p.PhalanxBonus, 0, 30);
-
-            // Mobility: must be positive (more moves = better)
-            p.MobilityBonus = Math.Clamp(p.MobilityBonus, 0, 15);
-
-            // King safety: always positive contributions
-            p.KingShieldBonus = Math.Clamp(p.KingShieldBonus, 0, 30);
-            p.KingOpenFilePenalty = Math.Clamp(p.KingOpenFilePenalty, 0, 40);
-            p.KingAttackWeightPenalty = Math.Clamp(p.KingAttackWeightPenalty, 0, 30);
-
-            // Rook positional bonuses: always positive
-            p.RookBehindPasserBonus = Math.Clamp(p.RookBehindPasserBonus, 0, 50);
-            p.RookOnSeventhBonusMG = Math.Clamp(p.RookOnSeventhBonusMG, 0, 50);
-            p.RookOnSeventhBonusEG = Math.Clamp(p.RookOnSeventhBonusEG, 0, 50);
-            p.RookOnSeventhWithKingBonus = Math.Clamp(p.RookOnSeventhWithKingBonus, 0, 50);
-
-            // Space and tropism: positive
-            p.SpaceBonusMG = Math.Clamp(p.SpaceBonusMG, 0, 10);
-            p.QueenTropismBonus = Math.Clamp(p.QueenTropismBonus, 0, 10);
-            p.KnightTropismMG = Math.Clamp(p.KnightTropismMG, 0, 10);
-
-            // Bishop quality
-            p.BadBishopPenalty = Math.Clamp(p.BadBishopPenalty, -50, 0);
-            p.BishopLongDiagonalBonus = Math.Clamp(p.BishopLongDiagonalBonus, 0, 30);
-
-            p.OppositeColoredBishopsDrawFactor = Math.Clamp(p.OppositeColoredBishopsDrawFactor, 0, 100);
-
-            // Pawn storm: positive
-            p.PawnStormBonus4 = Math.Clamp(p.PawnStormBonus4, 0, 30);
-            p.PawnStormBonus5 = Math.Clamp(p.PawnStormBonus5, 0, 40);
-            p.PawnStormBonus6 = Math.Clamp(p.PawnStormBonus6, 0, 50);
-
-            // Threats: positive penalty amount
-            p.HangingPiecePenalty = Math.Clamp(p.HangingPiecePenalty, 0, 50);
-
-            // King-passer proximity: positive (closer king = better)
-            p.KingOwnPasserProximity = Math.Clamp(p.KingOwnPasserProximity, 0, 30);
-            p.KingEnemyPasserProximity = Math.Clamp(p.KingEnemyPasserProximity, 0, 30);
-
-            // Mop-up: positive
-            p.MopUpCenterDistanceWeight = Math.Clamp(p.MopUpCenterDistanceWeight, 0, 30);
-            p.MopUpKingProximityWeight = Math.Clamp(p.MopUpKingProximityWeight, 0, 20);
-
-            // Knight outposts: positive
-            p.KnightOutpostBonusMG = Math.Clamp(p.KnightOutpostBonusMG, 0, 50);
-            p.KnightOutpostBonusEG = Math.Clamp(p.KnightOutpostBonusEG, 0, 50);
+            p.BishopPairBonusMG = Math.Clamp(p.BishopPairBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.BishopPairBonusEG = Math.Clamp(p.BishopPairBonusEG, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOpenFileBonus = Math.Clamp(p.RookOpenFileBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookSemiOpenFileBonus = Math.Clamp(p.RookSemiOpenFileBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.DoubledPawnPenalty = Math.Clamp(p.DoubledPawnPenalty, BonusPenaltyMin, 0);
+            p.IsolatedPawnPenalty = Math.Clamp(p.IsolatedPawnPenalty, BonusPenaltyMin, 0);
+            p.BackwardPawnPenalty = Math.Clamp(p.BackwardPawnPenalty, BonusPenaltyMin, 0);
+            p.MobilityBonus = Math.Clamp(p.MobilityBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingShieldBonus = Math.Clamp(p.KingShieldBonus, 0, BonusPenaltyMax);
+            p.KingOpenFilePenalty = Math.Clamp(p.KingOpenFilePenalty, 0, BonusPenaltyMax);
+            p.RookBehindPasserBonus = Math.Clamp(p.RookBehindPasserBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOnSeventhBonusMG = Math.Clamp(p.RookOnSeventhBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOnSeventhBonusEG = Math.Clamp(p.RookOnSeventhBonusEG, BonusPenaltyMin, BonusPenaltyMax);
+            p.RookOnSeventhWithKingBonus = Math.Clamp(p.RookOnSeventhWithKingBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingAttackWeightPenalty = Math.Clamp(p.KingAttackWeightPenalty, 0, BonusPenaltyMax);
+            p.SpaceBonusMG = Math.Clamp(p.SpaceBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.BadBishopPenalty = Math.Clamp(p.BadBishopPenalty, BonusPenaltyMin, 0);
+            p.BishopLongDiagonalBonus = Math.Clamp(p.BishopLongDiagonalBonus, 0, BonusPenaltyMax);
+            p.QueenTropismBonus = Math.Clamp(p.QueenTropismBonus, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingOwnPasserProximity = Math.Clamp(p.KingOwnPasserProximity, BonusPenaltyMin, BonusPenaltyMax);
+            p.KingEnemyPasserProximity = Math.Clamp(p.KingEnemyPasserProximity, BonusPenaltyMin, BonusPenaltyMax);
+            p.MopUpCenterDistanceWeight = Math.Clamp(p.MopUpCenterDistanceWeight, 0, BonusPenaltyMax);
+            p.MopUpKingProximityWeight = Math.Clamp(p.MopUpKingProximityWeight, 0, BonusPenaltyMax);
+            p.KnightOutpostBonusMG = Math.Clamp(p.KnightOutpostBonusMG, BonusPenaltyMin, BonusPenaltyMax);
+            p.KnightOutpostBonusEG = Math.Clamp(p.KnightOutpostBonusEG, BonusPenaltyMin, BonusPenaltyMax);
         }
 
         /// <summary>

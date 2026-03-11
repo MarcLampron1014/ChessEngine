@@ -4,10 +4,10 @@ namespace ChessEngine
 {
     public struct Move
     {
-        public readonly int From;
-        public readonly int To;
-        public readonly Piece Promotion;
-        public readonly MoveFlags Flags;
+        public readonly int From;        // 0–63
+        public readonly int To;          // 0–63
+        public readonly Piece Promotion; // Empty if not a promotion
+        public readonly MoveFlags Flags; // Special move information
 
         public Move(int from, int to, Piece promotion = Piece.Empty, MoveFlags flags = MoveFlags.None)
         {
@@ -22,6 +22,7 @@ namespace ChessEngine
         public bool IsEnPassant => (Flags & MoveFlags.EnPassant) != 0;
         public bool IsCastling => (Flags & MoveFlags.Castling) != 0;
 
+        // UCI format: e2e4, e7e8q
         public override string ToString()
         {
             return $"{SquareToString(From)}{SquareToString(To)}" +
@@ -46,5 +47,15 @@ namespace ChessEngine
                 _ => ' '
             };
         }
+    }
+
+    [Flags]
+    public enum MoveFlags
+    {
+        None = 0,
+        Capture = 1,
+        EnPassant = 2,
+        Castling = 4,
+        PawnDoublePush = 8
     }
 }

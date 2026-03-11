@@ -7,11 +7,10 @@ namespace ChessEngine
     public class TimeManager
     {
         private const int StabilityThreshold = 75;
-        private const int StableIterationsForEarlyExit = 5;
-        private const int MinDepthForEarlyExit = 8;
+        private const int StableIterationsForEarlyExit = 4;
         private const double MaxExtension = 2.0;
         private const int SafetyMarginMs = 20;
-        private const int MinTimeMs = 500;
+        private const int MinTimeMs = 10;
         private const int HardCapMs = 10000;
 
         public int BaseTimeMs { get; private set; }
@@ -20,7 +19,6 @@ namespace ChessEngine
 
         private int _lastScore;
         private int _stableIterations;
-        private int _lastCompletedDepth;
         private double _timeExtension = 1.0;
 
         public void Initialize(int remainingMs, int incrementMs, int movesToGo,
@@ -28,33 +26,41 @@ namespace ChessEngine
         {
             _lastScore = 0;
             _stableIterations = 0;
-            _lastCompletedDepth = 0;
             _timeExtension = 1.0;
-            _mateFound = false;
 
-            int estimatedMovesLeft = movesToGo > 0 ? movesToGo : 20;
-            int baseTime = remainingMs / estimatedMovesLeft + (int)(incrementMs * 0.9);
-            baseTime = Math.Max(baseTime, incrementMs > 0 ? incrementMs : remainingMs / 40);
+            int baseTime = movesToGo > 0
+                ? remainingMs / movesToGo + (int)(incrementMs * 0.8)
+                : remainingMs / 30 + (int)(incrementMs * 0.8);
 
             double phaseMultiplier = phase switch
             {
-                GamePhase.Opening => 0.9,
+                GamePhase.Opening => 0.8,
                 GamePhase.Middlegame => 1.0,
                 GamePhase.Endgame => 1.2,
                 _ => 1.0
             };
             baseTime = (int)(baseTime * phaseMultiplier);
 
+            double complexityMultiplier = rootMoveCount switch
+            {
+                > 35 => 1.2,
+                < 5 => 0.5,
+                < 15 => 0.7,
+                _ => 1.0
+            };
+            baseTime = (int)(baseTime * complexityMultiplier);
+
             if (isInCheck)
                 baseTime = (int)(baseTime * 1.1);
 
             baseTime -= SafetyMarginMs;
+            baseTime = Math.Min(baseTime, remainingMs / 5);
             baseTime = Math.Min(baseTime, HardCapMs);
             baseTime = Math.Max(baseTime, MinTimeMs);
 
             BaseTimeMs = baseTime;
 
-            MaxTimeMs = Math.Min(baseTime * 4, remainingMs * 2 / 3);
+            MaxTimeMs = Math.Min(baseTime * 3, remainingMs / 2);
             MaxTimeMs = Math.Min(MaxTimeMs, HardCapMs);
             MaxTimeMs = Math.Max(MaxTimeMs, baseTime);
         }
@@ -63,9 +69,7 @@ namespace ChessEngine
         {
             _lastScore = 0;
             _stableIterations = 0;
-            _lastCompletedDepth = 0;
             _timeExtension = 1.0;
-            _mateFound = false;
 
             int time = Math.Max(moveTimeMs - SafetyMarginMs, MinTimeMs);
             BaseTimeMs = time;
@@ -74,26 +78,13 @@ namespace ChessEngine
 
         private const int WinningScoreThreshold = 180; // centipawns; score is from side-to-move perspective
         private const int LosingScoreThreshold = 180;  // when losing, extend time to find best defense or a hold
-        private const int MateScoreThreshold = 99000;  // scores above this indicate a forced mate
-
-        private bool _mateFound;
 
         public void OnIterationComplete(int depth, int score)
         {
-            _lastCompletedDepth = depth;
-
             if (depth == 1)
             {
                 _lastScore = score;
                 _stableIterations = 0;
-                return;
-            }
-
-            if (Math.Abs(score) >= MateScoreThreshold && depth >= 3)
-            {
-                _mateFound = true;
-                _stableIterations = StableIterationsForEarlyExit;
-                _lastScore = score;
                 return;
             }
 
@@ -102,8 +93,10 @@ namespace ChessEngine
             if (scoreDelta <= StabilityThreshold)
             {
                 _stableIterations++;
-                if (score >= WinningScoreThreshold && _stableIterations >= 2)
-                    _timeExtension = Math.Max(_timeExtension * 0.9, 0.5);
+                // When clearly winning and stable, extend time to find the conversion
+                if (score >= WinningScoreThreshold && _stableIterations >= 1)
+                    ExtendTime(1.15);
+                // When clearly losing and stable, extend time to find the best defense or a draw
                 if (score <= -LosingScoreThreshold && _stableIterations >= 1)
                     ExtendTime(1.15);
             }
@@ -127,17 +120,10 @@ namespace ChessEngine
             if (elapsedMs >= EffectiveBaseTime)
                 return true;
 
-            if (_mateFound && elapsedMs >= MinTimeMs)
-                return true;
-
-            // Require minimum depth before allowing stability-based early exit
-            if (_lastCompletedDepth < MinDepthForEarlyExit)
-                return false;
-
             // When winning or losing, require a higher minimum fraction of base time before allowing early exit
             bool winning = _lastScore >= WinningScoreThreshold;
             bool losing = _lastScore <= -LosingScoreThreshold;
-            long minTimeBeforeEarlyExit = (winning || losing) ? (BaseTimeMs * 4) / 5 : (BaseTimeMs * 3) / 4;
+            long minTimeBeforeEarlyExit = (winning || losing) ? (BaseTimeMs * 3) / 4 : (BaseTimeMs * 2) / 3;
             return _stableIterations >= StableIterationsForEarlyExit && elapsedMs >= minTimeBeforeEarlyExit;
         }
 

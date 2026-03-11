@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 
 namespace ChessEngine
 {
@@ -115,8 +116,22 @@ namespace ChessEngine
                 return;
             }
 
+            // Load eval params from file if exists
             if (File.Exists("eval_params.json"))
+            {
                 EvalParams.LoadFromFile("eval_params.json");
+                // #region agent log
+                try
+                {
+                    var logPath = @"c:\Users\marcl\ChessEngine\.cursor\debug.log";
+                    Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+                    var p = EvalParams.Instance;
+                    var line = JsonSerializer.Serialize(new { sessionId = "debug-session", runId = "post-fix", hypothesisId = "H1", location = "Program.cs:118", message = "params after load", data = new { TotalPhase = p.TotalPhase, PawnValueEG = p.PawnValueEG, PawnValueMG = p.PawnValueMG, PawnPstMGLength = p.PawnPstMG?.Length ?? -1 }, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }) + "\n";
+                    File.AppendAllText(logPath, line);
+                }
+                catch { }
+                // #endregion
+            }
 
             Uci.Run();
         }
