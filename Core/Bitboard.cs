@@ -60,7 +60,6 @@ namespace ChessEngine
             _initialized = true;
         }
 
-        #region Bit Operations
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int PopCount(ulong bb) => BitOperations.PopCount(bb);
@@ -91,9 +90,6 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ulong ToggleBit(ulong bb, int square) => bb ^ (1UL << square);
 
-        #endregion
-
-        #region Square Helpers
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int FileOf(int square) => square & 7;
@@ -107,9 +103,6 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int MirrorSquare(int square) => square ^ 56;
 
-        #endregion
-
-        #region Shift Operations
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ulong ShiftNorth(ulong bb) => bb << 8;
@@ -135,9 +128,6 @@ namespace ChessEngine
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ulong ShiftSouthWest(ulong bb) => (bb >> 9) & NotFileH;
 
-        #endregion
-
-        #region Initialization
 
         private static void InitSquareBitboards()
         {
@@ -306,9 +296,6 @@ namespace ChessEngine
             }
         }
 
-        #endregion
-
-        #region Debug Helpers
 
         /// <summary>
         /// Print a bitboard as a visual 8x8 grid.
@@ -328,7 +315,5 @@ namespace ChessEngine
             }
             Console.WriteLine();
         }
-
-        #endregion
     }
 }

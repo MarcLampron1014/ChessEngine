@@ -10,7 +10,7 @@ namespace ChessEngine
     /// </summary>
     public static class OpeningBook
     {
-        private const string DefaultBookPath = @"C:\Users\marcl\Cerebellum3Merge.bin";
+        private const string DefaultBookPath = "Cerebellum3Merge.bin";
         private const int EntrySize = 16; // key(8) + raw_move(2) + weight(2) + learn(4), big-endian
 
         private static string _bookPath = DefaultBookPath;
@@ -43,37 +43,67 @@ namespace ChessEngine
         /// </summary>
         public static Move? TryGetMove(Board board, int plyCount, int staticEval, Random? rng = null)
         {
-            if (string.IsNullOrEmpty(_bookPath)) return null;
-            if (plyCount > _bookDepth) return null;
-            if (staticEval < _bookEvalLimit) return null;
+            if (string.IsNullOrEmpty(_bookPath))
+            {
+                return null;
+            }
+            if (plyCount > _bookDepth)
+            {
+                return null;
+            }
+            if (staticEval < _bookEvalLimit)
+            {
+                return null;
+            }
 
-            if (!EnsureLoaded()) return null;
+            if (!EnsureLoaded())
+            {
+                return null;
+            }
 
             ulong key = ComputePolyglotKey(board);
             var entries = FindEntries(key);
-            if (entries.Count == 0) return null;
+            if (entries.Count == 0)
+            {
+                return null;
+            }
 
             var legal = MoveGenerator.GenerateLegalMoves(board);
             var valid = new List<(Move move, int weight)>();
 
             foreach (var (rawMove, weight) in entries)
             {
-                if (weight <= 0) continue;
-                if (!TryDecodeToLegal(rawMove, board, legal, out Move m)) continue;
+                if (weight <= 0)
+                {
+                    continue;
+                }
+                if (!TryDecodeToLegal(rawMove, board, legal, out Move m))
+                {
+                    continue;
+                }
                 valid.Add((m, weight));
             }
 
-            if (valid.Count == 0) return null;
+            if (valid.Count == 0)
+            {
+                return null;
+            }
 
             return WeightedRandom(valid, rng ?? Random.Shared);
         }
 
         private static bool EnsureLoaded()
         {
-            if (_bookData != null) return true;
+            if (_bookData != null)
+            {
+                return true;
+            }
             try
             {
-                if (!File.Exists(_bookPath)) return false;
+                if (!File.Exists(_bookPath))
+                {
+                    return false;
+                }
                 _bookData = File.ReadAllBytes(_bookPath);
                 if (_bookData.Length % EntrySize != 0) { _bookData = null; return false; }
                 _entryCount = _bookData.Length / EntrySize;
@@ -91,14 +121,23 @@ namespace ChessEngine
             {
                 int mid = (lo + hi) / 2;
                 ulong midKey = ReadKey(mid);
-                if (midKey < key) lo = mid + 1;
-                else hi = mid;
+                if (midKey < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
             }
 
             while (lo < _entryCount)
             {
                 ulong k = ReadKey(lo);
-                if (k != key) break;
+                if (k != key)
+                {
+                    break;
+                }
                 ushort rawMove = ReadRawMove(lo);
                 ushort weight = ReadWeight(lo);
                 result.Add((rawMove, weight));
@@ -158,13 +197,19 @@ namespace ChessEngine
         private static Move WeightedRandom(List<(Move move, int weight)> items, Random rng)
         {
             int total = 0;
-            foreach (var (_, w) in items) total += w;
+            foreach (var (_, w) in items)
+            {
+                total += w;
+            }
             int r = rng.Next(total);
             int sum = 0;
             foreach (var (m, w) in items)
             {
                 sum += w;
-                if (sum > r) return m;
+                if (sum > r)
+                {
+                    return m;
+                }
             }
             return items[items.Count - 1].move;
         }
@@ -177,15 +222,30 @@ namespace ChessEngine
             for (int sq = 0; sq < 64; sq++)
             {
                 Piece p = board.PieceAt(sq);
-                if (p == Piece.Empty) continue;
+                if (p == Piece.Empty)
+                {
+                    continue;
+                }
                 int idx = PolyglotPieceIndex[(int)p] * 64 + sq;
                 hash ^= PolyglotRandom[idx];
             }
 
-            if ((board.Castling & CastlingRights.WhiteKingSide) != 0) hash ^= PolyglotRandom[768];
-            if ((board.Castling & CastlingRights.WhiteQueenSide) != 0) hash ^= PolyglotRandom[769];
-            if ((board.Castling & CastlingRights.BlackKingSide) != 0) hash ^= PolyglotRandom[770];
-            if ((board.Castling & CastlingRights.BlackQueenSide) != 0) hash ^= PolyglotRandom[771];
+            if ((board.Castling & CastlingRights.WhiteKingSide) != 0)
+            {
+                hash ^= PolyglotRandom[768];
+            }
+            if ((board.Castling & CastlingRights.WhiteQueenSide) != 0)
+            {
+                hash ^= PolyglotRandom[769];
+            }
+            if ((board.Castling & CastlingRights.BlackKingSide) != 0)
+            {
+                hash ^= PolyglotRandom[770];
+            }
+            if ((board.Castling & CastlingRights.BlackQueenSide) != 0)
+            {
+                hash ^= PolyglotRandom[771];
+            }
 
             if (board.EnPassantSquare >= 0 && HasPawnThatCanCaptureEp(board))
             {
@@ -193,7 +253,10 @@ namespace ChessEngine
                 hash ^= PolyglotRandom[772 + file];
             }
 
-            if (board.WhiteToMove) hash ^= PolyglotRandom[780];
+            if (board.WhiteToMove)
+            {
+                hash ^= PolyglotRandom[780];
+            }
 
             return hash;
         }
@@ -201,18 +264,27 @@ namespace ChessEngine
         private static bool HasPawnThatCanCaptureEp(Board board)
         {
             int ep = board.EnPassantSquare;
-            if (ep < 0) return false;
+            if (ep < 0)
+            {
+                return false;
+            }
             int epFile = ep % 8;
             ulong pawns = board.WhiteToMove ? board.WP : board.BP;
             if (epFile > 0)
             {
                 int fromLeft = board.WhiteToMove ? ep - 9 : ep + 7;
-                if ((pawns & (1UL << fromLeft)) != 0) return true;
+                if ((pawns & (1UL << fromLeft)) != 0)
+                {
+                    return true;
+                }
             }
             if (epFile < 7)
             {
                 int fromRight = board.WhiteToMove ? ep - 7 : ep + 9;
-                if ((pawns & (1UL << fromRight)) != 0) return true;
+                if ((pawns & (1UL << fromRight)) != 0)
+                {
+                    return true;
+                }
             }
             return false;
         }

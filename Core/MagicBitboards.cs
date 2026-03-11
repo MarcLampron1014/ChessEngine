@@ -101,7 +101,6 @@ namespace ChessEngine
             _initialized = true;
         }
 
-        #region Attack Lookups
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ulong GetRookAttacks(int sq, ulong occupied)
@@ -127,9 +126,6 @@ namespace ChessEngine
             return GetRookAttacks(sq, occupied) | GetBishopAttacks(sq, occupied);
         }
 
-        #endregion
-
-        #region Initialization
 
         private static void InitRookMasks()
         {
@@ -191,8 +187,8 @@ namespace ChessEngine
         private static ulong GenerateRookMask(int sq)
         {
             ulong mask = 0;
-            int rank = sq / 8;
-            int file = sq % 8;
+            int rank = Bitboard.RankOf(sq);
+            int file = Bitboard.FileOf(sq);
 
             // North (exclude rank 8)
             for (int r = rank + 1; r < 7; r++)
@@ -219,8 +215,8 @@ namespace ChessEngine
         private static ulong GenerateBishopMask(int sq)
         {
             ulong mask = 0;
-            int rank = sq / 8;
-            int file = sq % 8;
+            int rank = Bitboard.RankOf(sq);
+            int file = Bitboard.FileOf(sq);
 
             // NE
             for (int r = rank + 1, f = file + 1; r < 7 && f < 7; r++, f++)
@@ -282,8 +278,8 @@ namespace ChessEngine
         private static ulong GenerateRookAttacks(int sq, ulong occupied)
         {
             ulong attacks = 0;
-            int rank = sq / 8;
-            int file = sq % 8;
+            int rank = Bitboard.RankOf(sq);
+            int file = Bitboard.FileOf(sq);
 
             // North
             for (int r = rank + 1; r <= 7; r++)
@@ -326,8 +322,8 @@ namespace ChessEngine
         private static ulong GenerateBishopAttacks(int sq, ulong occupied)
         {
             ulong attacks = 0;
-            int rank = sq / 8;
-            int file = sq % 8;
+            int rank = Bitboard.RankOf(sq);
+            int file = Bitboard.FileOf(sq);
 
             // NE
             for (int r = rank + 1, f = file + 1; r <= 7 && f <= 7; r++, f++)
@@ -363,7 +359,5 @@ namespace ChessEngine
 
             return attacks;
         }
-
-        #endregion
     }
 }
