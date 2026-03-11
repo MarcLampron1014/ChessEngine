@@ -12,12 +12,15 @@ namespace ChessEngine
         private const string EngineAuthor = "marcl";
         private const int DefaultHashSizeMB = 64;
         private const int DefaultThreads = 8;
+        private const int DefaultMoveOverhead = 10;
 
         private static readonly TimeManager _timeManager = new TimeManager();
+        private static int _moveOverhead = DefaultMoveOverhead;
         private static Task? _searchTask;
         private static Board? _goBoard;
         private static int _numThreads = DefaultThreads;
-        private static bool _inPonderMode;
+        private static volatile bool _inPonderMode;
+        private static int _bestMoveSent;
 
         public static void Run()
         {
@@ -43,9 +46,12 @@ namespace ChessEngine
                         WriteLineFlush($"id author {EngineAuthor}");
                         WriteLineFlush($"option name Hash type spin default {DefaultHashSizeMB} min 1 max 1024");
                         WriteLineFlush($"option name Threads type spin default {DefaultThreads} min 1 max 512");
+                        WriteLineFlush($"option name Move Overhead type spin default {DefaultMoveOverhead} min 0 max 1000");
                         WriteLineFlush($"option name BookFile type string default {OpeningBook.BookPath}");
                         WriteLineFlush("option name BookDepth type spin default 36 min 0 max 60");
                         WriteLineFlush("option name BookEvalLimit type spin default -40 min -1000 max 100");
+                        WriteLineFlush("option name Contempt type spin default 0 min -200 max 200");
+                        WriteLineFlush("option name SyzygyPath type string default ");
                         WriteLineFlush("uciok");
                         break;
                     case "isready":
@@ -92,12 +98,13 @@ namespace ChessEngine
                         if (_inPonderMode)
                         {
                             _inPonderMode = false;
-                            SendBestMoveFromLastResult(_goBoard, Search.GetLastResult());
+                            TrySendBestMove(_goBoard, Search.GetLastResult());
                         }
                         break;
                     case "ponderhit":
                         _inPonderMode = false;
-                        SendBestMoveFromLastResult(_goBoard, Search.GetLastResult());
+                        if (_searchTask != null && _searchTask.IsCompleted)
+                            TrySendBestMove(_goBoard, Search.GetLastResult());
                         break;
                     case "quit":
                         Search.RequestStop();
@@ -137,6 +144,12 @@ namespace ChessEngine
             {
                 _numThreads = Math.Max(1, Math.Min(512, threads));
             }
+            else if (optionName.Equals("Move", StringComparison.OrdinalIgnoreCase) &&
+                parts.Length > nameIdx + 1 && parts[nameIdx + 1].Equals("Overhead", StringComparison.OrdinalIgnoreCase) &&
+                TryParseInt(optionValue, out int overhead))
+            {
+                _moveOverhead = Math.Max(0, Math.Min(1000, overhead));
+            }
             else if (optionName.Equals("BookFile", StringComparison.OrdinalIgnoreCase))
             {
                 OpeningBook.BookPath = optionValue;
@@ -150,6 +163,15 @@ namespace ChessEngine
                 TryParseInt(optionValue, out int bookEvalLimit))
             {
                 OpeningBook.BookEvalLimit = bookEvalLimit;
+            }
+            else if (optionName.Equals("Contempt", StringComparison.OrdinalIgnoreCase) &&
+                     TryParseInt(optionValue, out int contempt))
+            {
+                Search.SetContempt(contempt);
+            }
+            else if (optionName.Equals("SyzygyPath", StringComparison.OrdinalIgnoreCase))
+            {
+                Tablebases.SetSyzygyPath(optionValue);
             }
         }
 
@@ -212,6 +234,7 @@ namespace ChessEngine
 
             _inPonderMode = ponder;
             _goBoard = board;
+            Interlocked.Exchange(ref _bestMoveSent, 0);
             InitializeTimeManager(board, movetime, wtime, btime, winc, binc, movestogo, infinite);
 
             // Try opening book before search
@@ -220,27 +243,32 @@ namespace ChessEngine
             var bookMove = OpeningBook.TryGetMove(board, plyCount, staticEval);
             if (bookMove.HasValue)
             {
+                string moveStr = bookMove.Value.ToString();
+                WriteLineFlush($"info depth 0 score cp {staticEval} nodes 0 nps 0 time 0 pv {moveStr} string book");
                 SendBookMove(board, bookMove.Value);
                 return;
             }
+
+            var searchBoard = new Board();
+            Fen.Load(searchBoard, Fen.Generate(board));
 
             _searchTask = Task.Run(() =>
             {
                 try
                 {
-                    var result = Search.FindBestMove(board, _timeManager, maxDepth: 64, numThreads: _numThreads);
+                    var result = Search.FindBestMove(searchBoard, _timeManager, maxDepth: 64, numThreads: _numThreads);
                     if (!_inPonderMode)
-                        SendBestMoveFromLastResult(board, result);
+                        TrySendBestMove(searchBoard, result);
                 }
-                catch (Search.SearchTimeoutException)
+                catch (SearchTimeoutException)
                 {
                     if (!_inPonderMode)
-                        SendBestMoveFromLastResult(board, Search.GetLastResult());
+                        TrySendBestMove(searchBoard, Search.GetLastResult());
                 }
                 catch (Exception)
                 {
                     if (!_inPonderMode)
-                        SendBestMoveFromLastResult(board, Search.GetLastResult());
+                        TrySendBestMove(searchBoard, Search.GetLastResult());
                 }
             });
         }
@@ -251,7 +279,7 @@ namespace ChessEngine
             WriteLineFlush($"bestmove {bestStr}");
         }
 
-        private static void SendBestMoveFromLastResult(Board? board, Search.SearchResult? result = null)
+        private static void SendBestMoveFromLastResult(Board? board, SearchResult? result = null)
         {
             var r = result ?? Search.GetLastResult();
             Move best = r.BestMove;
@@ -269,10 +297,14 @@ namespace ChessEngine
                         break;
                     }
                 }
-                if (!found && legal.Count > 0)
-                    best = legal[0];
-                if (legal.Count == 0)
-                    best = default;
+                if (!found)
+                {
+                    string fen = Fen.Generate(board);
+                    string searchMove = best.From != best.To ? best.ToString() : "(none)";
+                    Console.Error.WriteLine($"WARNING: search move {searchMove} not in legal moves for {fen}");
+                    if (legal.Count == 0 || (best.From == best.To && best.Promotion == Piece.Empty))
+                        best = default;
+                }
             }
 
             string bestStr = best.From == best.To && best.Promotion == Piece.Empty ? "0000" : best.ToString();
@@ -285,6 +317,12 @@ namespace ChessEngine
             {
                 WriteLineFlush($"bestmove {bestStr}");
             }
+        }
+
+        private static void TrySendBestMove(Board? board, SearchResult? result = null)
+        {
+            if (Interlocked.CompareExchange(ref _bestMoveSent, 1, 0) == 0)
+                SendBestMoveFromLastResult(board, result);
         }
 
         private static void InitializeTimeManager(Board board, int movetime, int wtime, int btime,
@@ -303,6 +341,8 @@ namespace ChessEngine
 
             int remaining = board.WhiteToMove ? wtime : btime;
             int increment = board.WhiteToMove ? winc : binc;
+
+            remaining = Math.Max(0, remaining - _moveOverhead);
 
             if (remaining <= 0)
             {
